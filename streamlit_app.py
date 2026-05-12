@@ -173,35 +173,46 @@ if not data:
     st.error("Aucune donnée récupérée.")
     st.stop()
 
-# ---------- CORRECTION DU GRAPHIQUE + SUPPRESSION PRIX FIXES ----------
+# ---------- PRIX FIXES AU 11/05/2026 (À commenter pour passer en direct) ----------
+prix_fixes = {
+    "ANRJ.PA": 777.90,
+    "AASI.PA": 57.44,
+    "MWRD.PA": 150.63,
+    "GOLD-EUR.PA": 159.19,
+    "DCAM.PA": 5.823
+}
+for ticker, prix in prix_fixes.items():
+    if ticker not in data:
+        data[ticker] = pd.DataFrame({"Close": [prix]}, index=[datetime.now()])
+    else:
+        if not data[ticker].empty:
+            data[ticker].loc[data[ticker].index[-1], "Close"] = prix
+
+# ---------- FONCTION GRAPHIQUE CORRIGÉE (pas de crash) ----------
 def compute_historical_value():
     start_date = DATE_DEBUT
-    df_combined = pd.DataFrame()
-    
+    df_combined = None
     for pos in POSITIONS:
         t = ticker_used.get(pos["nom"])
         if t and t in data:
-            # Récupérer la série des prix de clôture, en s'assurant qu'elle reste une Series avec dates
             ts = data[t]["Close"]
+            # S'assurer que ts est une Series avec index datetime
             if isinstance(ts, pd.DataFrame):
-                ts = ts.iloc[:, 0]   # sécurité si yfinance renvoie plusieurs colonnes
-            # Convertir l'index en datetime si nécessaire et filtrer à partir de la date de début
-            ts = ts[ts.index >= pd.to_datetime(start_date).tz_localize(None)]
-            
-            if df_combined.empty:
+                ts = ts.iloc[:, 0]
+            if not isinstance(ts, pd.Series):
+                continue
+            ts = ts[ts.index >= start_date]
+            if df_combined is None:
                 df_combined = pd.DataFrame(index=ts.index)
             df_combined[t] = ts
-    
-    if df_combined.empty:
+    if df_combined is None or df_combined.empty:
         return None
-    
     df_combined = df_combined.ffill()
     valeur_hist = pd.Series(0.0, index=df_combined.index)
     for pos in POSITIONS:
         t = ticker_used.get(pos["nom"])
         if t and t in df_combined.columns:
             valeur_hist += pos["parts"] * df_combined[t]
-    
     if len(valeur_hist) == 0:
         return None
     val_init = valeur_hist.iloc[0]
@@ -263,7 +274,7 @@ perf_totale = (gain_net / capital_net) * 100 if capital_net != 0 else 0
 perf_jour_euro = valeur_totale - valeur_veille
 perf_jour_pct = (perf_jour_euro / valeur_veille * 100) if valeur_veille != 0 else 0.0
 
-# ---------- BENCHMARK INTERNE : MSCI World AV ----------
+# ---------- BENCHMARK INTERNE ----------
 perf_bench = None
 gap = None
 bench_price = None
@@ -291,7 +302,7 @@ if bench_price and bench_prev and bench_prev != 0:
     if perf_jour_pct is not None:
         gap_jour = perf_jour_pct - perf_bench_jour
 
-# ---------- PRIX DE RATTRAPAGE (vs benchmark AV) ----------
+# ---------- PRIX DE RATTRAPAGE ----------
 prix_rattrapage = None
 if gap is not None and gap < 0 and ticker_used.get("Global Hydrogen"):
     valeur_cible = capital_net * (1 + perf_bench/100)
@@ -360,7 +371,7 @@ if "BE" in data and not data["BE"].empty:
     be_series = data["BE"]["Close"].squeeze()
     bloom_close = safe_last(be_series)
 
-# ---------- RÈGLES DÉCISIONNELLES ----------
+# ---------- RÈGLES DÉCISIONNELLES (identiques à votre base) ----------
 def evaluate_hydrogen():
     if anrj_current is None: return "⚠️ ANRJ manquant", "gray"
     if anrj_current < 706.06: return "🚨 STOP-LOSS : COUPURE 50% VERS WORLD", "red"
@@ -476,13 +487,13 @@ if perf_bench is not None:
     col5.metric("GAP vs World AV", f"{gap:+.2f}%",
                 delta=f"{gap_jour:+.2f}% (auj.)" if gap_jour is not None else None)
 
-# Soldes nets estimés (retrait total)
+# Soldes nets estimés
 col_pea, col_av = st.columns(2)
 for enveloppe, col in [("PEA", col_pea), ("AV", col_av)]:
     val = valeur_par_enveloppe[enveloppe]
     gain = gain_par_enveloppe[enveloppe]
     net, avert = calculer_net_fiscal(enveloppe, val, val, gain)
-    col.metric(f"Solde Net Estimé {enveloppe}", f"{net:,.2f}€")
+    col.metric(f"Solde Net Estimé {enveloppe}", f"{net:,.2f}€", help="Retrait total (estimation)")
     if avert:
         col.caption(avert)
 
@@ -502,16 +513,14 @@ for i, p in enumerate(positions_calculees):
 bg = {"red": "#dc3545", "orange": "#fd7e14", "green": "#28a745"}[decision_color]
 st.markdown(f"<div class='big-verdict' style='background-color:{bg};'>{decision_globale}</div>", unsafe_allow_html=True)
 
-# Simulation retrait fiscal dans la sidebar
+# Simulation de retrait fiscal
 st.sidebar.markdown("---")
 st.sidebar.subheader("🧮 Simulation retrait fiscal")
 montant_retrait = st.sidebar.number_input("Montant à retirer (€)", min_value=0.0, value=1000.0, step=100.0)
 enveloppe_retrait = st.sidebar.selectbox("Enveloppe", ["PEA", "AV"])
-net_retrait, avert_retrait = calculer_net_fiscal(
-    enveloppe_retrait, montant_retrait,
-    valeur_par_enveloppe.get(enveloppe_retrait, 0.0),
-    gain_par_enveloppe.get(enveloppe_retrait, 0.0)
-)
+valeur_poche = valeur_par_enveloppe.get(enveloppe_retrait, 0.0)
+gain_poche = gain_par_enveloppe.get(enveloppe_retrait, 0.0)
+net_retrait, avert_retrait = calculer_net_fiscal(enveloppe_retrait, montant_retrait, valeur_poche, gain_poche)
 st.sidebar.markdown(f"**Net après impôts :** {net_retrait:,.2f} €")
 if avert_retrait:
     st.sidebar.warning(avert_retrait)
@@ -566,10 +575,8 @@ m2.metric("DXY", f"{dxy:.2f}" if dxy else "N/A")
 m3.metric("Brent", f"{brent:.2f}$" if brent else "N/A")
 m4.metric("Bloom Energy", f"{bloom_close:.2f}$" if bloom_close else "N/A")
 
-# ---------- GRAPHIQUE CORRIGÉ ----------
+# ---------- GRAPHIQUE (sécurisé) ----------
 port_hist = compute_historical_value()
-
-# Benchmark historique
 bench_hist = None
 if bench_ticker and bench_ticker in data and not data[bench_ticker].empty:
     bench_series = data[bench_ticker]["Close"].squeeze()
