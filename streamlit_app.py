@@ -38,7 +38,6 @@ bonus_fortuneo = st.sidebar.number_input(
 st.sidebar.markdown("---")
 st.sidebar.subheader("📦 Positions")
 
-# Nouvelles positions de base conformes aux captures d'écran
 POSITIONS_BASE = [
     {"nom": "MSCI World AV",   "tickers": ["MWRD.PA", "MWRD.L", "IWDA.AS", "EUNL.DE"], "parts": 36.33,   "prm": 140.41,  "enveloppe": "AV"},
     {"nom": "MSCI World PEA",  "tickers": ["DCAM.PA"],                                "parts": 481.0,   "prm": 5.5937,  "enveloppe": "PEA"},
@@ -77,7 +76,6 @@ for pos in POSITIONS:
         reduction_par_part = bonus_fortuneo / pos["parts"]
         pos["prm"] = pos["prm"] - reduction_par_part
 
-# Benchmark : MSCI World AV
 BENCHMARK_LABEL = "MSCI World AV"
 EXTRA_TICKERS = ["CW8.PA", "^TNX", "DX-Y.NYB", "BZ=F", "BE", "NVDA", "^SOX"]
 SENTINELLES = {
@@ -127,7 +125,7 @@ def download_ticker(ticker, start):
         pass
     return pd.DataFrame()
 
-@st.cache_data(ttl=60, show_spinner=False)   # cache réduit pour suivi plus réactif
+@st.cache_data(ttl=60, show_spinner=False)   # Rafraîchissement toutes les minutes
 def load_all_data():
     start = datetime.now() - timedelta(days=500)
     data = {}
@@ -176,7 +174,7 @@ if not data:
     st.error("Aucune donnée récupérée.")
     st.stop()
 
-# ---------- PLUS AUCUN PRIX FIXE : 100% LIVE ----------
+# ---------- 100 % LIVE (plus de prix fixes) ----------
 
 # ---------- RÉCUPÉRATION DES TICKERS ET PRIX ----------
 ticker_used = {}
@@ -210,15 +208,34 @@ for pos in POSITIONS:
     prix_veille = prev_prices.get(ticker)
     enveloppe = pos.get("enveloppe", "AV")
     if prix is None or np.isnan(prix):
-        positions_calculees.append({"nom": pos["nom"], "prix": None, "valeur": 0.0, "perf": None, "var_jour": None})
+        positions_calculees.append({
+            "nom": pos["nom"],
+            "prix": None,
+            "valeur": 0.0,
+            "perf": None,
+            "var_jour": 0.0,
+            "var_jour_euro": 0.0
+        })
     else:
         valeur = pos["parts"] * prix
         perf = (prix - pos["prm"]) / pos["prm"] * 100
+
+        # Variation journalière (% et €)
         if prix_veille is not None and not np.isnan(prix_veille) and prix_veille != 0:
             var_jour = (prix - prix_veille) / prix_veille * 100
+            var_jour_euro = (prix - prix_veille) * pos["parts"]
         else:
-            var_jour = None
-        positions_calculees.append({"nom": pos["nom"], "prix": prix, "valeur": valeur, "perf": perf, "var_jour": var_jour})
+            var_jour = 0.0
+            var_jour_euro = 0.0
+
+        positions_calculees.append({
+            "nom": pos["nom"],
+            "prix": prix,
+            "valeur": valeur,
+            "perf": perf,
+            "var_jour": var_jour,
+            "var_jour_euro": var_jour_euro
+        })
         valeur_totale += valeur
         valeur_par_enveloppe[enveloppe] += valeur
         gain_par_enveloppe[enveloppe] += (prix - pos["prm"]) * pos["parts"]
@@ -436,10 +453,12 @@ st.caption(f"Données du {now.strftime('%d/%m/%Y %H:%M')} (heure de Paris)")
 
 st.markdown("### 📊 Executive")
 col1, col2, col3 = st.columns(3)
-# Tous les "(auj.)" deviennent "(24h)"
-col1.metric("Valeur totale", f"{valeur_totale:,.2f}€", delta=f"{perf_jour_euro:+,.2f}€ (24h)")
+# Delta combiné € + %
+col1.metric("Valeur totale", f"{valeur_totale:,.2f}€",
+            delta=f"{perf_jour_euro:+,.2f}€ ({perf_jour_pct:+.2f}%) (24h)")
 col2.metric("Gain net", f"{gain_net:+,.2f}€")
-col3.metric("Performance", f"{perf_totale:+.2f}%", delta=f"{perf_jour_pct:+.2f}% (24h)")
+col3.metric("Performance", f"{perf_totale:+.2f}%",
+            delta=f"{perf_jour_pct:+.2f}% ({perf_jour_euro:+,.2f}€) (24h)")
 
 if perf_bench is not None:
     col4, col5 = st.columns(2)
@@ -464,11 +483,9 @@ cols = st.columns(len(positions_calculees))
 for i, p in enumerate(positions_calculees):
     with cols[i]:
         prix_str = f"{p['prix']:.2f}€" if p['prix'] is not None else "N/A"
-        perf_str = f"{p['perf']:+.2f}%" if p['perf'] is not None else "N/A"
-        var_jour_str = f"{p['var_jour']:+.2f}% (24h)" if p['var_jour'] is not None else ""
-        st.metric(label=p['nom'], value=prix_str, delta=perf_str)
-        if var_jour_str:
-            st.caption(var_jour_str)
+        # Delta = variation journalière en % et €
+        delta_str = f"{p['var_jour']:+.2f}% ({p['var_jour_euro']:+.2f}€)"
+        st.metric(label=p['nom'], value=prix_str, delta=delta_str)
 
 # Feu tricolore
 bg = {"red": "#dc3545", "orange": "#fd7e14", "green": "#28a745"}[decision_color]
@@ -538,7 +555,6 @@ m4.metric("Bloom Energy", f"{bloom_close:.2f}$" if bloom_close else "N/A")
 
 # ---------- DIAGRAMME DE RÉPARTITION (donut) ----------
 st.subheader("📊 Répartition du Portefeuille")
-# Ne garder que les positions ayant une valeur > 0
 donut_data = [p for p in positions_calculees if p["valeur"] > 0]
 if donut_data:
     fig = px.pie(
