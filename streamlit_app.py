@@ -47,7 +47,7 @@ POSITIONS_BASE = [
     {"nom": "MSCI World PEA",  "tickers": ["DCAM.PA"],                                "parts": 481.0,   "prm": 5.5937,  "enveloppe": "PEA"},
     {"nom": "Global Hydrogen", "tickers": ["ANRJ.PA"],                                "parts": 4.7701,  "prm": 707.55,  "enveloppe": "AV"},
     {"nom": "EM Asia",         "tickers": ["AASI.PA"],                                "parts": 40.8272, "prm": 49.96,   "enveloppe": "AV"},
-    {"nom": "Or Physique",     "tickers": ["GOLD-EUR.PA", "CGLD.PA", "GOLD.PA"],      "parts": 4.5902,  "prm": 163.39,  "enveloppe": "AV"},
+    {"nom": "Or Physique",     "tickers": ["SGLD.PA", "CGLD.PA", "GOLD.PA"],          "parts": 4.5902,  "prm": 163.39,  "enveloppe": "AV"},
 ]
 
 positions_dynamiques = []
@@ -62,10 +62,10 @@ for pos in POSITIONS:
         pos["prm"] -= bonus_fortuneo / pos["parts"]
 
 BENCHMARK_LABEL = "MSCI World AV"
-EXTRA_TICKERS = ["CW8.PA", "^TNX", "BZ=F", "BE", "NVDA", "^SOX"]  # on retire DX-Y.NYB, on ajoutera les futurs
+EXTRA_TICKERS = ["CW8.PA", "^TNX", "BZ=F", "BE", "NVDA", "^SOX"]
 PROXIES_ANRJ = ["PLUG", "BE", "NEL.OL"]
 PROXIES_AASI = ["TSM", "005930.KS", "AAXJ"]
-FUTURES = ["NQ=F", "ES=F", "EURUSD=X", "GC=F"]   # ajoutés
+FUTURES = ["NQ=F", "ES=F", "EURUSD=X", "GC=F"]
 
 SENTINELLES = {
     "TSMC": ["TSM", "2330.TW"],
@@ -106,9 +106,19 @@ def safe_last(series):
     return to_float(series)
 
 def download_ticker(ticker, start):
+    """Télécharge et retourne un DataFrame propre (sans MultiIndex, colonnes simples)."""
     try:
-        df = yf.download(ticker, start=start, progress=False)
-        return df if not df.empty else pd.DataFrame()
+        df = yf.download(ticker, start=start, progress=False, auto_adjust=True)
+        if df.empty:
+            return pd.DataFrame()
+        # Si yfinance renvoie un MultiIndex (un seul ticker), on aplatit
+        if isinstance(df.columns, pd.MultiIndex):
+            # On garde le premier niveau (Close, High, Low, etc.) et on supprime le nom du ticker
+            df.columns = df.columns.droplevel(1)
+        # Au cas où ce serait une Series, on la convertit en DataFrame
+        if isinstance(df, pd.Series):
+            df = df.to_frame(name='Close')
+        return df
     except:
         return pd.DataFrame()
 
@@ -118,10 +128,9 @@ def load_all_data():
     data = {}
     all_pos_tickers = [t for pos in POSITIONS for t in pos["tickers"]]
     all_tickers = all_pos_tickers + EXTRA_TICKERS + [t for prox in [PROXIES_ANRJ, PROXIES_AASI] for t in prox] + FUTURES
-    # SENTINELLES
     for name, tickers in SENTINELLES.items():
         all_tickers.extend(tickers)
-    all_tickers = list(set(all_tickers))  # uniques
+    all_tickers = list(set(all_tickers))
 
     for t in all_tickers:
         df = download_ticker(t, start)
@@ -163,7 +172,9 @@ def compute_adx(high, low, close, period=14):
 def analyze_proxy(ticker, data_dict):
     if ticker not in data_dict or data_dict[ticker].empty:
         return None
-    df = data_dict[ticker].copy()
+    # Convertir en DataFrame standard (même si c'était une Series)
+    df = pd.DataFrame(data_dict[ticker].copy())
+    # S'assurer que 'Close' existe
     if 'Close' not in df.columns:
         return None
     close = df['Close'].squeeze()
@@ -171,13 +182,12 @@ def analyze_proxy(ticker, data_dict):
         return None
     sma20 = safe_last(compute_sma(close, 20))
     rsi = safe_last(compute_rsi(close, 14))
-    # ADX nécessite High, Low
+    # ADX seulement si High/Low disponibles
+    adx = None
     if 'High' in df.columns and 'Low' in df.columns:
         high = df['High'].squeeze()
         low = df['Low'].squeeze()
         adx = compute_adx(high, low, close)
-    else:
-        adx = None
     return {"prix": safe_last(close), "sma20": sma20, "rsi": rsi, "adx": adx}
 
 # ---------- CHARGEMENT ----------
@@ -341,7 +351,6 @@ def evaluate_sentinelles():
     for name, info in sentinelle_info.items():
         if info["prix"] and info["sma20"] and info["prix"] < info["sma20"]:
             alerts.append(f"⚠️ {name} sous SMA20")
-    # Check proxies faiblesse
     for name, prox in [("Hydrogène", proxies_anrj_data), ("EM Asia", proxies_aasi_data)]:
         count_under = sum(1 for v in prox.values() if v and v.get("sma20") and v["prix"] < v["sma20"])
         if count_under >= 2:
@@ -371,9 +380,7 @@ def determine_phase(gap):
     if gap < 0:
         return "Phase 1 : Reconquête – Revenir à l'équilibre vs World AV", "#dc3545"
     else:
-        # Détecter si signaux faiblissants
         signals = []
-        # ANRJ sous SMA20 ou proxies en baisse
         if anrj_sma20 and anrj_current and anrj_current < anrj_sma20:
             signals.append("ANRJ sous SMA20")
         if aasi_sma20 and aasi_current and aasi_current < aasi_sma20:
@@ -392,32 +399,22 @@ def determine_phase(gap):
 
 phase_text, phase_color = determine_phase(gap)
 
-# Cible Patrimoniale toujours affichée
-cible_world_pct = 94.0
-cible_gold_pct = 6.0
-
 # ---------- ARBITRAGE AUTOMATIQUE ----------
 def compute_arbitrage():
     actions = []
     if gap is None: return actions
-    # Calcul du poids satellites
     poids = poids_satellite if 'poids_satellite' in locals() else 0
-    for pos in [{"nom": "Global Hydrogen", "valeur": valeur_anrj, "parts": next((p["parts"] for p in POSITIONS if p["nom"]=="Global Hydrogen"), 0)},
-                {"nom": "EM Asia", "valeur": valeur_aasi, "parts": next((p["parts"] for p in POSITIONS if p["nom"]=="EM Asia"), 0)}]:
-        if pos["valeur"] <= 0: continue
-        # Si sous SMA20, ordre de vendre 25% ou nécessaire pour ramener poids <45%
-        if pos["nom"] == "Global Hydrogen" and anrj_sma20 and anrj_current and anrj_current < anrj_sma20:
-            sell_pct = 0.25
-            sell_amount = pos["valeur"] * sell_pct
-            actions.append(f"🚨 ACTION : Vendre {sell_amount:,.2f}€ de {pos['nom']} pour acheter du MSCI World AV")
-        if pos["nom"] == "EM Asia" and aasi_sma20 and aasi_current and aasi_current < aasi_sma20:
-            sell_pct = 0.25
-            sell_amount = pos["valeur"] * sell_pct
-            actions.append(f"🚨 ACTION : Vendre {sell_amount:,.2f}€ de {pos['nom']} pour acheter du MSCI World AV")
-        # Si poids > 45% sans signal technique, on peut aussi suggérer un rééquilibrage
+    for pos_info in [{"nom": "Global Hydrogen", "valeur": valeur_anrj},
+                     {"nom": "EM Asia", "valeur": valeur_aasi}]:
+        if pos_info["valeur"] <= 0: continue
+        if pos_info["nom"] == "Global Hydrogen" and anrj_sma20 and anrj_current and anrj_current < anrj_sma20:
+            sell_amount = pos_info["valeur"] * 0.25
+            actions.append(f"🚨 ACTION : Vendre {sell_amount:,.2f}€ de {pos_info['nom']} pour acheter du MSCI World AV")
+        if pos_info["nom"] == "EM Asia" and aasi_sma20 and aasi_current and aasi_current < aasi_sma20:
+            sell_amount = pos_info["valeur"] * 0.25
+            actions.append(f"🚨 ACTION : Vendre {sell_amount:,.2f}€ de {pos_info['nom']} pour acheter du MSCI World AV")
     if poids > 45:
         excedent = (poids - 45) / 100 * valeur_totale
-        # proposition de réduction proportionnelle sur les deux satellites
         actions.append(f"ℹ️ RÉÉQUILIBRAGE : Réduire satellites de {excedent:,.2f}€ pour rester sous 45%")
     return actions
 
@@ -451,14 +448,13 @@ now = datetime.now(ZoneInfo("Europe/Paris"))
 st.title("🛰️ Cockpit Décisionnel v2.0 Expert")
 st.caption(f"Données en temps réel – {now.strftime('%d/%m/%Y %H:%M')} (heure de Paris)")
 
-# Bannière de phase
 st.markdown(f"""
 <div style="background-color:{phase_color}; color:white; padding:0.75rem; border-radius:8px; text-align:center; font-weight:bold; margin-bottom:1rem;">
     {phase_text}
 </div>
 """, unsafe_allow_html=True)
 
-# SECTION 1 : COMMAND CENTER
+# SECTION 1
 st.markdown("## 🚀 Command Center")
 with st.container():
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -477,7 +473,6 @@ with st.container():
         st.caption(f"{perf_jour_pct:+.2f}% ({perf_jour_euro:+,.2f}€) 24h")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Benchmark + Donut
 col_b, col_d = st.columns([1, 1])
 with col_b:
     st.markdown("### 📊 Benchmark vs " + BENCHMARK_LABEL)
@@ -503,7 +498,7 @@ with col_d:
     else:
         st.info("Aucune donnée")
 
-# SECTION 2 : ARBITRAGE & STRATÉGIE
+# SECTION 2
 st.markdown("## 📈 Stratégie & Arbitrage")
 st.markdown(f'<div class="big-verdict" style="background-color:{"#dc3545" if decision_color=="red" else "#fd7e14" if decision_color=="orange" else "#28a745"};">{decision_globale}</div>', unsafe_allow_html=True)
 
@@ -547,7 +542,6 @@ with colA:
         st.warning("AASI indisponible")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Poids satellites & Arbitrage
 st.markdown('<div class="card">', unsafe_allow_html=True)
 st.markdown("### ⚖️ Poids Satellites & Arbitrage")
 valeur_anrj = next((p["valeur"] for p in positions_calculees if p["nom"]=="Global Hydrogen"), 0)
@@ -560,9 +554,8 @@ if arbitrage_actions:
         st.markdown(f"- {act}")
 st.markdown('</div>', unsafe_allow_html=True)
 
-# SECTION 3 : SENTINELLES & MACRO FUTURES
+# SECTION 3
 st.markdown("## 🛰️ Sentinelles & Macro Futures")
-
 colS, colM = st.columns([2, 1])
 with colS:
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -584,7 +577,6 @@ with colS:
 with colM:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("### 🌍 Flash Macro (Temps réel)")
-    # Indices
     nq = macro_data.get("NQ=F")
     es = macro_data.get("ES=F")
     if nq:
@@ -595,7 +587,6 @@ with colM:
         var_es = (es['price'] - es['prev_close']) / es['prev_close'] * 100 if es['prev_close'] else 0
         st.metric("S&P 500", f"{es['price']:.2f}", delta=f"{var_es:+.2f}%")
     else: st.metric("S&P 500", "N/A")
-    # Taux/Devises
     tnx = macro_data.get("^TNX")
     if tnx:
         st.metric("US 10Y", f"{tnx['price']:.2f}%")
@@ -604,7 +595,6 @@ with colM:
     if eurusd:
         st.metric("EUR/USD", f"{eurusd['price']:.4f}")
     else: st.metric("EUR/USD", "N/A")
-    # Commodities
     brent = macro_data.get("BZ=F")
     if brent:
         st.metric("Brent", f"{brent['price']:.2f}$")
@@ -616,7 +606,7 @@ with colM:
     else: st.metric("Or", "N/A")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# SECTION 4 : SIMULATEUR FISCAL
+# SECTION 4
 st.markdown("## 🧮 Simulateur Fiscal")
 col_pea, col_av = st.columns(2)
 with col_pea:
