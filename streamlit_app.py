@@ -37,7 +37,6 @@ bonus_fortuneo = st.sidebar.number_input(
 st.sidebar.markdown("---")
 st.sidebar.subheader("📦 Positions")
 
-# ---------- POSITIONS DE BASE AVEC ENVELOPPES ----------
 POSITIONS_BASE = [
     {"nom": "MSCI World AV",   "tickers": ["MWRD.PA", "MWRD.L", "IWDA.AS", "EUNL.DE"], "parts": 36.33, "prm": 145.09, "enveloppe": "AV"},
     {"nom": "MSCI World PEA",  "tickers": ["DCAM.PA"],                                "parts": 481,    "prm": 5.261,  "enveloppe": "PEA"},
@@ -76,7 +75,6 @@ for pos in POSITIONS:
         reduction_par_part = bonus_fortuneo / pos["parts"]
         pos["prm"] = pos["prm"] - reduction_par_part
 
-# Benchmark : on utilisera la ligne MSCI World AV
 BENCHMARK_LABEL = "MSCI World AV"
 EXTRA_TICKERS = ["CW8.PA", "^TNX", "DX-Y.NYB", "BZ=F", "BE", "NVDA", "^SOX"]
 SENTINELLES = {
@@ -175,23 +173,39 @@ if not data:
     st.error("Aucune donnée récupérée.")
     st.stop()
 
-# ---------- PRIX FIXES AU 11/05/2026 (pour fiabilisation et actualisation) ----------
-prix_fixes = {
-    "ANRJ.PA": 777.90,
-    "AASI.PA": 57.44,
-    "MWRD.PA": 150.63,
-    "GOLD-EUR.PA": 159.19,
-    "DCAM.PA": 5.823
-}
-# On applique ces prix en les injectant dans les données
-for ticker, prix in prix_fixes.items():
-    if ticker not in data:
-        # Crée un DataFrame factice avec une seule ligne pour la date du jour
-        data[ticker] = pd.DataFrame({"Close": [prix]}, index=[datetime.now()])
-    else:
-        # Remplace le dernier prix de clôture par le prix fixe
-        if not data[ticker].empty:
-            data[ticker].loc[data[ticker].index[-1], "Close"] = prix
+# ---------- CORRECTION DU GRAPHIQUE + SUPPRESSION PRIX FIXES ----------
+def compute_historical_value():
+    start_date = DATE_DEBUT
+    df_combined = pd.DataFrame()
+    
+    for pos in POSITIONS:
+        t = ticker_used.get(pos["nom"])
+        if t and t in data:
+            # Récupérer la série des prix de clôture, en s'assurant qu'elle reste une Series avec dates
+            ts = data[t]["Close"]
+            if isinstance(ts, pd.DataFrame):
+                ts = ts.iloc[:, 0]   # sécurité si yfinance renvoie plusieurs colonnes
+            # Convertir l'index en datetime si nécessaire et filtrer à partir de la date de début
+            ts = ts[ts.index >= pd.to_datetime(start_date).tz_localize(None)]
+            
+            if df_combined.empty:
+                df_combined = pd.DataFrame(index=ts.index)
+            df_combined[t] = ts
+    
+    if df_combined.empty:
+        return None
+    
+    df_combined = df_combined.ffill()
+    valeur_hist = pd.Series(0.0, index=df_combined.index)
+    for pos in POSITIONS:
+        t = ticker_used.get(pos["nom"])
+        if t and t in df_combined.columns:
+            valeur_hist += pos["parts"] * df_combined[t]
+    
+    if len(valeur_hist) == 0:
+        return None
+    val_init = valeur_hist.iloc[0]
+    return (valeur_hist / val_init) * 100 if val_init != 0 else None
 
 # ---------- RÉCUPÉRATION DES TICKERS ET PRIX ----------
 ticker_used = {}
@@ -217,7 +231,8 @@ positions_calculees = []
 valeur_totale = 0.0
 valeur_veille = 0.0
 valeur_par_enveloppe = {"PEA": 0.0, "AV": 0.0}
-gain_par_enveloppe = {"PEA": 0.0, "AV": 0.0}  # gain brut (valeur - PRM*total parts)
+gain_par_enveloppe = {"PEA": 0.0, "AV": 0.0}
+
 for pos in POSITIONS:
     ticker = ticker_used[pos["nom"]]
     prix = latest_prices.get(ticker)
@@ -411,14 +426,6 @@ alerte_risque = poids_satellite > 45
 
 # ---------- MODULE FISCAL ----------
 def calculer_net_fiscal(enveloppe, montant_retrait, valeur_poche, gain_poche):
-    """
-    Calcule le montant net après impôt pour un retrait donné.
-    enveloppe : "PEA" ou "AV"
-    montant_retrait : somme brute demandée
-    valeur_poche : valeur totale actuelle de l'enveloppe
-    gain_poche : plus-value latente totale de l'enveloppe
-    Retourne (net, avertissement)
-    """
     if montant_retrait <= 0:
         return 0.0, ""
     if montant_retrait > valeur_poche:
@@ -436,19 +443,14 @@ def calculer_net_fiscal(enveloppe, montant_retrait, valeur_poche, gain_poche):
         return net, ""
     
     elif enveloppe == "AV":
-        # Date d'ouverture du contrat = DATE_DEBUT (17/09/2025), 8 ans = 17/09/2033
         maturite = datetime(2033, 9, 17, tzinfo=ZoneInfo("Europe/Paris"))
         if aujourdhui < maturite:
-            # Moins de 8 ans : flat tax 30% sur les gains
             impots = 0.30 * gain_retrait
             net = montant_retrait - impots
             return net, ""
         else:
-            # Après 8 ans : abattement 9 200 € pour un couple marié
             abattement = 9200
-            # Prélèvements sociaux sur la totalité des gains
             ps = 0.172 * gain_retrait
-            # IR sur la part des gains au-dessus de l'abattement
             ir = 0.128 * max(0, gain_retrait - abattement)
             impots = ps + ir
             net = montant_retrait - impots
@@ -474,13 +476,13 @@ if perf_bench is not None:
     col5.metric("GAP vs World AV", f"{gap:+.2f}%",
                 delta=f"{gap_jour:+.2f}% (auj.)" if gap_jour is not None else None)
 
-# Soldes nets estimés (retrait total hypothétique)
+# Soldes nets estimés (retrait total)
 col_pea, col_av = st.columns(2)
 for enveloppe, col in [("PEA", col_pea), ("AV", col_av)]:
     val = valeur_par_enveloppe[enveloppe]
     gain = gain_par_enveloppe[enveloppe]
     net, avert = calculer_net_fiscal(enveloppe, val, val, gain)
-    col.metric(f"Solde Net Estimé {enveloppe}", f"{net:,.2f}€", help="Retrait total (estimation)")
+    col.metric(f"Solde Net Estimé {enveloppe}", f"{net:,.2f}€")
     if avert:
         col.caption(avert)
 
@@ -500,14 +502,16 @@ for i, p in enumerate(positions_calculees):
 bg = {"red": "#dc3545", "orange": "#fd7e14", "green": "#28a745"}[decision_color]
 st.markdown(f"<div class='big-verdict' style='background-color:{bg};'>{decision_globale}</div>", unsafe_allow_html=True)
 
-# Simulation de retrait fiscal (sidebar ou intégrée)
+# Simulation retrait fiscal dans la sidebar
 st.sidebar.markdown("---")
 st.sidebar.subheader("🧮 Simulation retrait fiscal")
 montant_retrait = st.sidebar.number_input("Montant à retirer (€)", min_value=0.0, value=1000.0, step=100.0)
 enveloppe_retrait = st.sidebar.selectbox("Enveloppe", ["PEA", "AV"])
-valeur_poche = valeur_par_enveloppe.get(enveloppe_retrait, 0.0)
-gain_poche = gain_par_enveloppe.get(enveloppe_retrait, 0.0)
-net_retrait, avert_retrait = calculer_net_fiscal(enveloppe_retrait, montant_retrait, valeur_poche, gain_poche)
+net_retrait, avert_retrait = calculer_net_fiscal(
+    enveloppe_retrait, montant_retrait,
+    valeur_par_enveloppe.get(enveloppe_retrait, 0.0),
+    gain_par_enveloppe.get(enveloppe_retrait, 0.0)
+)
 st.sidebar.markdown(f"**Net après impôts :** {net_retrait:,.2f} €")
 if avert_retrait:
     st.sidebar.warning(avert_retrait)
@@ -562,35 +566,17 @@ m2.metric("DXY", f"{dxy:.2f}" if dxy else "N/A")
 m3.metric("Brent", f"{brent:.2f}$" if brent else "N/A")
 m4.metric("Bloom Energy", f"{bloom_close:.2f}$" if bloom_close else "N/A")
 
-# ---------- GRAPHIQUE ----------
-def compute_historical_value():
-    start_date = DATE_DEBUT
-    df_combined = None
-    for pos in POSITIONS:
-        t = ticker_used.get(pos["nom"])
-        if t and t in data:
-            ts = data[t]["Close"].squeeze()
-            ts = ts[ts.index >= start_date]
-            if df_combined is None:
-                df_combined = pd.DataFrame(index=ts.index)
-            df_combined[t] = ts
-    if df_combined is None or df_combined.empty: return None
-    df_combined = df_combined.ffill()
-    valeur_hist = pd.Series(0.0, index=df_combined.index)
-    for pos in POSITIONS:
-        t = ticker_used.get(pos["nom"])
-        if t and t in df_combined.columns:
-            prix_series = df_combined[t]
-            valeur_hist += pos["parts"] * prix_series
-    val_init = valeur_hist.iloc[0]
-    return (valeur_hist / val_init) * 100 if val_init != 0 else None
-
+# ---------- GRAPHIQUE CORRIGÉ ----------
 port_hist = compute_historical_value()
+
+# Benchmark historique
 bench_hist = None
 if bench_ticker and bench_ticker in data and not data[bench_ticker].empty:
     bench_series = data[bench_ticker]["Close"].squeeze()
+    if isinstance(bench_series, pd.DataFrame):
+        bench_series = bench_series.iloc[:, 0]
     try:
-        start_idx = bench_series.index.get_loc(DATE_DEBUT, method="ffill")
+        start_idx = bench_series.index.get_loc(pd.to_datetime(DATE_DEBUT), method="ffill")
         bench_from_start = bench_series.iloc[start_idx:]
         if len(bench_from_start) > 0:
             bench_hist = (bench_from_start / bench_from_start.iloc[0]) * 100
