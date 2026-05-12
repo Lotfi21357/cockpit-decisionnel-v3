@@ -11,32 +11,34 @@ warnings.filterwarnings("ignore")
 # ---------- CONFIGURATION ----------
 st.set_page_config(page_title="Cockpit Décisionnel", page_icon="🛰️", layout="centered", initial_sidebar_state="expanded")
 
-# ---------- CSS PREMIUM (cartes, badges, couleurs) ----------
+# ---------- CSS DARK MODE PREMIUM ----------
 st.markdown("""
 <style>
-    /* Fond général */
+    /* Fond global */
     .stApp {
-        background-color: #f4f6f9;
+        background-color: #0E1117;
     }
-    /* Carte blanche */
+    /* Carte sombre */
     .card {
-        background-color: #ffffff;
+        background-color: #1A1D24;
         border-radius: 12px;
         padding: 1.2rem;
         margin-bottom: 1rem;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        border: 1px solid #2E3239;
     }
     /* KPI executive */
     .kpi-value {
         font-size: 2rem;
         font-weight: 700;
-        color: #1E2A3A;
+        color: #FFFFFF;
     }
     .kpi-label {
         font-size: 0.9rem;
-        color: #6c757d;
+        color: #B0B5BD;
         text-transform: uppercase;
         letter-spacing: 0.5px;
+        margin-bottom: 0.25rem;
     }
     /* Bannières */
     .big-verdict {
@@ -61,7 +63,39 @@ st.markdown("""
     .badge-orange { background-color: #fd7e14; color: white; }
     .badge-green { background-color: #28a745; color: white; }
     .badge-gray { background-color: #6c757d; color: white; }
-    .small-text { font-size: 0.85rem; color: #6c757d; }
+    .small-text { font-size: 0.85rem; color: #B0B5BD; }
+    /* Tableaux foncés */
+    .stDataFrame {
+        background-color: #1A1D24;
+        color: #FFFFFF;
+    }
+    /* Métriques Streamlit natives en mode sombre */
+    .stMetric label {
+        color: #B0B5BD !important;
+    }
+    .stMetric .css-1xarl3l {
+        color: #FFFFFF !important;
+    }
+    /* Progress bar */
+    .stProgress > div > div {
+        background-color: #28a745;
+    }
+    /* Résultat net après impôts */
+    .net-result {
+        background-color: #1E2F29;
+        padding: 1rem;
+        border-radius: 8px;
+        margin-top: 1rem;
+        border-left: 4px solid #28a745;
+    }
+    /* Légendes et textes secondaires */
+    .caption-text {
+        color: #B0B5BD;
+    }
+    /* Titres de section */
+    h2, h3, h4 {
+        color: #FFFFFF !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -134,7 +168,7 @@ SENTINELLES = {
 
 DATE_DEBUT = datetime(2025, 9, 17)
 
-# ---------- FONCTIONS UTILES (inchangées) ----------
+# ---------- FONCTIONS UTILES ----------
 def to_float(val):
     if val is None: return None
     if isinstance(val, (int, float, np.floating, np.integer)): return float(val)
@@ -370,7 +404,7 @@ if "BE" in data and not data["BE"].empty:
     be_series = data["BE"]["Close"].squeeze()
     bloom_close = safe_last(be_series)
 
-# ---------- RÈGLES DÉCISIONNELLES (inchangées) ----------
+# ---------- RÈGLES DÉCISIONNELLES ----------
 def evaluate_hydrogen():
     if anrj_current is None: return "⚠️ ANRJ manquant", "gray"
     if anrj_current < 706.06: return "🚨 STOP-LOSS : COUPURE 50% VERS WORLD", "red"
@@ -434,7 +468,7 @@ valeur_aasi = next((p["valeur"] for p in positions_calculees if p["nom"] == "EM 
 poids_satellite = (valeur_anrj + valeur_aasi) / valeur_totale * 100 if valeur_totale > 0 else 0
 alerte_risque = poids_satellite > 45
 
-# ---------- MODULE FISCAL (inchangé) ----------
+# ---------- MODULE FISCAL ----------
 def calculer_net_fiscal(enveloppe, montant_retrait, valeur_poche, gain_poche):
     if montant_retrait <= 0:
         return 0.0, ""
@@ -468,16 +502,15 @@ def calculer_net_fiscal(enveloppe, montant_retrait, valeur_poche, gain_poche):
     else:
         return 0.0, "Enveloppe inconnue"
 
-# ---------- NOUVELLE INTERFACE PREMIUM ----------
+# ---------- INTERFACE PREMIUM DARK MODE ----------
 now = datetime.now(ZoneInfo("Europe/Paris"))
-st.title("🛰️ Cockpit Décisionnel")
+st.title("🛰️ Cockpit Décisionnel v2.0")
 st.caption(f"Données en temps réel – {now.strftime('%d/%m/%Y %H:%M')} (heure de Paris)")
 
 # ======================= SECTION 1 : COMMAND CENTER =======================
 st.markdown("## 🚀 Command Center")
 with st.container():
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    # Ligne de KPIs
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown(f'<div class="kpi-label">Valeur Totale</div>', unsafe_allow_html=True)
@@ -502,9 +535,8 @@ with col_bench:
                   delta=f"{perf_bench_jour:+.2f}% 24h" if perf_bench_jour else None)
         st.metric(label="GAP vs World AV", value=f"{gap:+.2f}%",
                   delta=f"{gap_jour:+.2f}% 24h" if gap_jour else None)
-        # Barre de progression du GAP
         if gap is not None:
-            gap_norm = (gap + 5) / 10   # normalise entre -5% et +5%
+            gap_norm = (gap + 5) / 10
             gap_norm = max(0, min(1, gap_norm))
             st.progress(gap_norm, text=f"Écart par rapport au World AV : {gap:+.2f}%")
     else:
@@ -516,7 +548,8 @@ with col_donut:
     if donut_data:
         fig = px.pie(donut_data, values='valeur', names='nom', hole=0.4)
         fig.update_traces(textinfo='percent+label')
-        fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=300)
+        fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=300,
+                          paper_bgcolor='#1A1D24', font=dict(color='#FFFFFF'))
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("Aucune donnée")
@@ -524,7 +557,6 @@ with col_donut:
 # ======================= SECTION 2 : STRATÉGIE & ARBITRAGE =======================
 st.markdown("## 📈 Stratégie & Arbitrage")
 
-# Feu tricolore géant
 bg_color = {"red": "#dc3545", "orange": "#fd7e14", "green": "#28a745"}[decision_color]
 st.markdown(f"""
 <div class="big-verdict" style="background-color:{bg_color}; margin-bottom:1.5rem;">
@@ -532,7 +564,6 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# Badge de statut (utilitaire)
 def get_status_badge(msg):
     if "MAINTIEN" in msg.upper(): return "Maintenir", "green"
     if "TAKE PROFIT" in msg.upper(): return "Vendre (Take Profit)", "green"
@@ -543,7 +574,6 @@ def get_status_badge(msg):
     if "SURVEILLANCE" in msg.upper(): return "Surveillance", "orange"
     return "Neutre", "gray"
 
-# Analyse Hydrogène & EM Asia côte à côte
 colH, colA = st.columns(2)
 
 with colH:
@@ -554,7 +584,6 @@ with colH:
         d1.metric("Prix", f"{anrj_current:.2f}€")
         d2.metric("SMA20", f"{anrj_sma20:.2f}€" if anrj_sma20 else "N/A")
         d3.metric("RSI", f"{anrj_rsi:.1f}" if anrj_rsi else "N/A")
-        # Badge de statut
         msg, col = evaluate_hydrogen()
         status, badge_color = get_status_badge(msg)
         st.markdown(f'<span class="badge badge-{badge_color}">{status}</span>', unsafe_allow_html=True)
@@ -578,7 +607,6 @@ with colA:
         st.warning("AASI indisponible")
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Poids satellites (carte séparée)
 st.markdown('<div class="card">', unsafe_allow_html=True)
 st.markdown("### ⚖️ Poids Satellites")
 st.write(f"ANRJ + EM Asia : {poids_satellite:.1f}% du portefeuille")
@@ -629,7 +657,6 @@ with colM:
 # ======================= SECTION 4 : SIMULATEUR FISCAL =======================
 st.markdown("## 🧮 Simulateur Fiscal")
 
-# Soldes nets estimés en haut de la section
 col_pea, col_av = st.columns(2)
 with col_pea:
     st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -653,7 +680,6 @@ with col_av:
         st.caption(avert)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Formulaire de simulation
 st.markdown('<div class="card">', unsafe_allow_html=True)
 st.markdown("### 💸 Simuler un retrait")
 col_form1, col_form2 = st.columns(2)
@@ -668,9 +694,9 @@ if avert_retrait:
     st.warning(avert_retrait)
 else:
     st.markdown(f"""
-    <div style="background:#e9f7ef; padding:1rem; border-radius:8px; margin-top:1rem;">
+    <div class="net-result">
         <span style="font-weight:bold; color:#28a745;">Montant net après impôts :</span>
-        <span style="font-size:1.5rem; font-weight:bold; color:#1E2A3A;"> {net_retrait:,.2f}€</span>
+        <span style="font-size:1.5rem; font-weight:bold; color:#FFFFFF; margin-left:0.5rem;">{net_retrait:,.2f}€</span>
     </div>
     """, unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
