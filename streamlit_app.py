@@ -1,833 +1,663 @@
-# =========================================================
-# 🛰️ COCKPIT DÉCISIONNEL BOURSIER - VERSION SYNCHRONISÉE
-# Alignée sur historique réel du portefeuille
-# =========================================================
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.express as px
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import warnings
-
 warnings.filterwarnings("ignore")
 
-# =========================================================
-# CONFIG STREAMLIT
-# =========================================================
+# ---------- CONFIGURATION ----------
+st.set_page_config(page_title="Cockpit Décisionnel", page_icon="🛰️", layout="centered", initial_sidebar_state="expanded")
 
-st.set_page_config(
-    page_title="Cockpit Décisionnel Expert",
-    page_icon="🛰️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-PARIS_TZ = ZoneInfo("Europe/Paris")
-
-# =========================================================
-# CSS PREMIUM
-# =========================================================
-
+# ---------- CSS DARK MODE PREMIUM ----------
 st.markdown("""
 <style>
-
-.stApp {
-    background-color: #0E1117;
-}
-
-.card {
-    background: #161B22;
-    border: 1px solid #2B313A;
-    border-radius: 18px;
-    padding: 1.2rem;
-    margin-bottom: 1rem;
-}
-
-.kpi-title {
-    color: #9AA4AF;
-    font-size: 0.85rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-}
-
-.kpi-value {
-    color: white;
-    font-size: 2rem;
-    font-weight: 700;
-}
-
-.phase-banner {
-    padding: 1rem;
-    border-radius: 14px;
-    text-align: center;
-    color: white;
-    font-size: 1.15rem;
-    font-weight: 700;
-    margin-bottom: 1rem;
-}
-
-.sell-alert {
-    background: #4B1113;
-    border: 1px solid #DC3545;
-    color: white;
-    padding: 1rem;
-    border-radius: 12px;
-    font-weight: 700;
-    margin-top: 1rem;
-}
-
-.ok-alert {
-    background: #123524;
-    border: 1px solid #198754;
-    color: white;
-    padding: 1rem;
-    border-radius: 12px;
-    font-weight: 700;
-    margin-top: 1rem;
-}
-
+    .stApp { background-color: #0E1117; }
+    .card { background-color: #1A1D24; border-radius:12px; padding:1.2rem; margin-bottom:1rem; box-shadow:0 2px 8px rgba(0,0,0,0.3); border:1px solid #2E3239; }
+    .kpi-value { font-size:2rem; font-weight:700; color:#FFFFFF; }
+    .kpi-label { font-size:0.9rem; color:#B0B5BD; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:0.25rem; }
+    .big-verdict { font-size:1.4rem !important; font-weight:bold; text-align:center; padding:1rem; border-radius:12px; margin:1rem 0; color:white; }
+    .badge { display:inline-block; padding:0.25rem 0.75rem; border-radius:20px; font-size:0.8rem; font-weight:600; text-transform:uppercase; }
+    .badge-red { background-color:#dc3545; color:white; }
+    .badge-orange { background-color:#fd7e14; color:white; }
+    .badge-green { background-color:#28a745; color:white; }
+    .badge-gray { background-color:#6c757d; color:white; }
+    .small-text { font-size:0.85rem; color:#B0B5BD; }
+    .stDataFrame { background-color:#1A1D24; color:#FFFFFF; }
+    .stMetric label { color:#B0B5BD !important; }
+    .stMetric .css-1xarl3l { color:#FFFFFF !important; }
+    .stProgress > div > div { background-color:#28a745; }
+    .net-result { background-color:#1E2F29; padding:1rem; border-radius:8px; margin-top:1rem; border-left:4px solid #28a745; }
+    .caption-text { color:#B0B5BD; }
+    h2, h3, h4 { color:#FFFFFF !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# =========================================================
-# PARAMÈTRES HISTORIQUES RÉELS
-# =========================================================
+# ---------- SIDEBAR ----------
+st.sidebar.title("⚙️ Gestion Dynamique")
+capital_investi = st.sidebar.number_input("Capital investi (€)", value=13956.49, step=100.0)
+bonus_fortuneo = st.sidebar.number_input("Bonus Fortuneo déjà perçu (€)", value=160.0, step=10.0)
+st.sidebar.markdown("---")
+st.sidebar.subheader("📦 Positions")
 
-DATE_DEBUT = "2025-09-17"
-
-CAPITAL_NET = 13796.71
-
-BONUS_FORTUNEO = 160.0
-
-POSITIONS = [
-
-    {
-        "nom": "MSCI World AV",
-        "ticker": "MWRD.PA",
-        "parts": 36.33,
-        "prm": 140.41,
-        "type": "core"
-    },
-
-    {
-        "nom": "MSCI World PEA",
-        "ticker": "DCAM.PA",
-        "parts": 481.0,
-        "prm": 5.5937,
-        "type": "core"
-    },
-
-    {
-        "nom": "Global Hydrogen",
-        "ticker": "ANRJ.PA",
-        "parts": 4.7701,
-        "prm": 707.55,
-        "type": "satellite"
-    },
-
-    {
-        "nom": "EM Asia",
-        "ticker": "AASI.PA",
-        "parts": 40.8272,
-        "prm": 49.96,
-        "type": "satellite"
-    },
-
-    {
-        "nom": "Or Physique",
-        "ticker": "CGLD.PA",
-        "parts": 4.5902,
-        "prm": 163.39,
-        "type": "gold"
-    }
+POSITIONS_BASE = [
+    {"nom": "MSCI World AV",   "tickers": ["MWRD.PA", "MWRD.L", "IWDA.AS", "EUNL.DE"], "parts": 36.33,   "prm": 140.41,  "enveloppe": "AV"},
+    {"nom": "MSCI World PEA",  "tickers": ["DCAM.PA"],                                "parts": 481.0,   "prm": 5.5937,  "enveloppe": "PEA"},
+    {"nom": "Global Hydrogen", "tickers": ["ANRJ.PA"],                                "parts": 4.7701,  "prm": 707.55,  "enveloppe": "AV"},
+    {"nom": "EM Asia",         "tickers": ["AASI.PA"],                                "parts": 40.8272, "prm": 49.96,   "enveloppe": "AV"},
+    {"nom": "Or Physique",     "tickers": ["GOLD-EUR.PA", "CGLD.PA", "GOLD.PA"],      "parts": 4.5902,  "prm": 163.39,  "enveloppe": "AV"},
 ]
 
-# =========================================================
-# BONUS FORTUNEO -> AJUSTEMENT PRM PEA
-# =========================================================
+positions_dynamiques = []
+for pos in POSITIONS_BASE:
+    parts = st.sidebar.number_input(f"Parts {pos['nom']}", value=float(pos["parts"]), step=0.0001, key=f"parts_{pos['nom']}")
+    prm = st.sidebar.number_input(f"PRM {pos['nom']}", value=float(pos["prm"]), step=0.0001, key=f"prm_{pos['nom']}")
+    positions_dynamiques.append({"nom": pos["nom"], "tickers": pos["tickers"], "parts": parts, "prm": prm, "enveloppe": pos["enveloppe"]})
+POSITIONS = positions_dynamiques
 
 for pos in POSITIONS:
+    if pos["nom"] == "MSCI World PEA" and pos["parts"] > 0:
+        pos["prm"] -= bonus_fortuneo / pos["parts"]
 
-    if pos["nom"] == "MSCI World PEA":
+BENCHMARK_LABEL = "MSCI World AV"
+EXTRA_TICKERS = ["CW8.PA", "^TNX", "BZ=F", "BE", "NVDA", "^SOX"]  # on retire DX-Y.NYB, on ajoutera les futurs
+PROXIES_ANRJ = ["PLUG", "BE", "NEL.OL"]
+PROXIES_AASI = ["TSM", "005930.KS", "AAXJ"]
+FUTURES = ["NQ=F", "ES=F", "EURUSD=X", "GC=F"]   # ajoutés
 
-        reduction = BONUS_FORTUNEO / pos["parts"]
-
-        pos["prm"] = pos["prm"] - reduction
-
-# =========================================================
-# PROXIES
-# =========================================================
-
-PROXIES = {
-    "ANRJ.PA": ["PLUG", "BE", "NEL.OL"],
-    "AASI.PA": ["TSM", "005930.KS"]
+SENTINELLES = {
+    "TSMC": ["TSM", "2330.TW"],
+    "Samsung": ["005930.KS", "SSNLF"],
+    "SK Hynix": ["000660.KS", "HXSCL"],
+    "Air Liquide": ["AI.PA"],
+    "Bloom Energy": ["BE"],
 }
 
-# =========================================================
-# ROBUST DATA ENGINE
-# =========================================================
+DATE_DEBUT = datetime(2025, 9, 17)
 
-def flatten_columns(df):
+# ---------- FONCTIONS UTILES ----------
+@st.cache_data(ttl=60, show_spinner=False)
+def get_previous_close(ticker):
+    try:
+        info = yf.Ticker(ticker).info
+        return float(info.get("previousClose")) if info.get("previousClose") else None
+    except:
+        return None
 
-    if df is None or df.empty:
+def to_float(val):
+    if val is None: return None
+    if isinstance(val, (int, float, np.floating, np.integer)): return float(val)
+    if isinstance(val, pd.Series): return float(val.iloc[0]) if not val.empty else None
+    if isinstance(val, np.ndarray): return float(val.flat[0]) if val.size > 0 else None
+    try: return float(val)
+    except: return None
+
+def safe_last(series):
+    if series is None: return None
+    if isinstance(series, pd.DataFrame): series = series.squeeze()
+    if isinstance(series, pd.Series):
+        valid = series.dropna()
+        return to_float(valid.iloc[-1]) if not valid.empty else None
+    if isinstance(series, np.ndarray):
+        valid = series[~np.isnan(series)]
+        return to_float(valid[-1]) if valid.size > 0 else None
+    return to_float(series)
+
+def download_ticker(ticker, start):
+    try:
+        df = yf.download(ticker, start=start, progress=False)
+        return df if not df.empty else pd.DataFrame()
+    except:
         return pd.DataFrame()
 
-    df = df.copy()
-
-    # Correction MultiIndex yfinance
-    if isinstance(df.columns, pd.MultiIndex):
-
-        df.columns = [col[0] for col in df.columns]
-
-    # Suppression colonnes dupliquées
-    df = df.loc[:, ~df.columns.duplicated()]
-
-    return df
-
-
 @st.cache_data(ttl=60, show_spinner=False)
-def download_data(tickers):
-
+def load_all_data():
+    start = datetime.now() - timedelta(days=500)
     data = {}
+    all_pos_tickers = [t for pos in POSITIONS for t in pos["tickers"]]
+    all_tickers = all_pos_tickers + EXTRA_TICKERS + [t for prox in [PROXIES_ANRJ, PROXIES_AASI] for t in prox] + FUTURES
+    # SENTINELLES
+    for name, tickers in SENTINELLES.items():
+        all_tickers.extend(tickers)
+    all_tickers = list(set(all_tickers))  # uniques
 
-    for ticker in tickers:
-
-        try:
-
-            df = yf.download(
-                ticker,
-                start=DATE_DEBUT,
-                progress=False,
-                auto_adjust=False,
-                threads=False
-            )
-
-            df = flatten_columns(df)
-
-            if df.empty:
-                continue
-
-            # Sécurisation types
-            for col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-
-            df.dropna(how="all", inplace=True)
-
-            if df.empty:
-                continue
-
-            data[ticker] = df
-
-        except Exception as e:
-
-            print(f"Erreur téléchargement {ticker}: {e}")
-
+    for t in all_tickers:
+        df = download_ticker(t, start)
+        if not df.empty:
+            data[t] = df
     return data
 
-# =========================================================
-# INDICATEURS TECHNIQUES
-# =========================================================
-
-def safe_close(df):
-
-    if df is None:
-        return pd.Series(dtype=float)
-
-    if df.empty:
-        return pd.Series(dtype=float)
-
-    if "Close" not in df.columns:
-        return pd.Series(dtype=float)
-
-    return pd.to_numeric(
-        df["Close"],
-        errors="coerce"
-    ).dropna()
-
-
-def last_value(series):
-
-    if series is None:
-        return None
-
-    if len(series) == 0:
-        return None
-
-    return float(series.iloc[-1])
-
-
-def previous_value(series):
-
-    if len(series) < 2:
-        return None
-
-    return float(series.iloc[-2])
-
-
 def compute_sma(series, window):
-
-    if len(series) < window:
-        return pd.Series(dtype=float)
-
-    return series.rolling(window).mean()
-
+    if series is None or len(series) < window: return None
+    return series.rolling(window=window).mean()
 
 def compute_rsi(series, period=14):
-
-    if len(series) < period + 1:
-        return pd.Series(dtype=float)
-
+    if series is None or len(series) < period+1: return None
     delta = series.diff()
-
-    gains = delta.clip(lower=0)
-    losses = -delta.clip(upper=0)
-
-    avg_gain = gains.ewm(alpha=1/period, adjust=False).mean()
-    avg_loss = losses.ewm(alpha=1/period, adjust=False).mean()
-
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=period, min_periods=period).mean()
+    avg_loss = loss.rolling(window=period, min_periods=period).mean()
+    avg_loss.replace(0, np.nan, inplace=True)
     rs = avg_gain / avg_loss
-
     return 100 - (100 / (1 + rs))
 
-# =========================================================
-# CHARGEMENT DES DONNÉES
-# =========================================================
+def compute_adx(high, low, close, period=14):
+    """Simplifié: renvoie l'ADX lissé"""
+    if len(close) < period+1:
+        return None
+    tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
+    up = high.diff()
+    down = -low.diff()
+    plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+    minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+    atr = tr.rolling(window=period).mean()
+    plus_di = 100 * (pd.Series(plus_dm).rolling(window=period).mean() / atr)
+    minus_di = 100 * (pd.Series(minus_dm).rolling(window=period).mean() / atr)
+    dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+    adx = dx.rolling(window=period).mean()
+    return safe_last(adx)
 
-ALL_TICKERS = []
-
-for pos in POSITIONS:
-    ALL_TICKERS.append(pos["ticker"])
-
-for arr in PROXIES.values():
-    ALL_TICKERS.extend(arr)
-
-ALL_TICKERS = list(set(ALL_TICKERS))
-
-MARKET_DATA = download_data(ALL_TICKERS)
-
-# =========================================================
-# CALCULS PORTEFEUILLE
-# =========================================================
-
-portfolio_rows = []
-
-VALEUR_TOTALE = 0.0
-
-for pos in POSITIONS:
-
-    ticker = pos["ticker"]
-
-    if ticker not in MARKET_DATA:
-        continue
-
-    df = MARKET_DATA[ticker]
-
-    close = safe_close(df)
-
-    if close.empty:
-        continue
-
-    prix = last_value(close)
-
-    previous_close = previous_value(close)
-
-    valeur = prix * pos["parts"]
-
-    gain_eur = valeur - (pos["parts"] * pos["prm"])
-
-    perf_position = ((prix / pos["prm"]) - 1) * 100
-
-    # Variation journalière
-    if previous_close and previous_close != 0:
-
-        var_jour = (
-            (prix - previous_close)
-            / previous_close
-        ) * 100
-
+def analyze_proxy(ticker, data_dict):
+    if ticker not in data_dict or data_dict[ticker].empty:
+        return None
+    df = data_dict[ticker].copy()
+    if 'Close' not in df.columns:
+        return None
+    close = df['Close'].squeeze()
+    if len(close) < 20:
+        return None
+    sma20 = safe_last(compute_sma(close, 20))
+    rsi = safe_last(compute_rsi(close, 14))
+    # ADX nécessite High, Low
+    if 'High' in df.columns and 'Low' in df.columns:
+        high = df['High'].squeeze()
+        low = df['Low'].squeeze()
+        adx = compute_adx(high, low, close)
     else:
+        adx = None
+    return {"prix": safe_last(close), "sma20": sma20, "rsi": rsi, "adx": adx}
 
-        var_jour = 0
+# ---------- CHARGEMENT ----------
+data = load_all_data()
+if not data:
+    st.error("Aucune donnée récupérée.")
+    st.stop()
 
-    sma20 = last_value(
-        compute_sma(close, 20)
-    )
+# ---------- RÉCUPÉRATION PRIX PORTEFEUILLE ----------
+ticker_used = {}
+latest_prices = {}
+prev_close_dict = {}
+for pos in POSITIONS:
+    used = None
+    for t in pos["tickers"]:
+        if t in data and not data[t].empty:
+            used = t
+            break
+    ticker_used[pos["nom"]] = used
+    if used:
+        prix = safe_last(data[used]["Close"])
+        latest_prices[used] = prix
+        prev_close_dict[used] = get_previous_close(used)
+    else:
+        latest_prices[pos["nom"]] = None
+        prev_close_dict[pos["nom"]] = None
 
-    sma50 = last_value(
-        compute_sma(close, 50)
-    )
+# ---------- CALCUL PORTEFEUILLE ----------
+positions_calculees = []
+valeur_totale = 0.0
+valeur_veille = 0.0
+valeur_par_enveloppe = {"PEA": 0.0, "AV": 0.0}
+gain_par_enveloppe = {"PEA": 0.0, "AV": 0.0}
 
-    rsi14 = last_value(
-        compute_rsi(close)
-    )
+for pos in POSITIONS:
+    ticker = ticker_used[pos["nom"]]
+    prix = latest_prices.get(ticker)
+    prev_close = prev_close_dict.get(ticker)
+    enveloppe = pos.get("enveloppe", "AV")
+    if prix is None or np.isnan(prix):
+        positions_calculees.append({"nom": pos["nom"], "prix": None, "valeur": 0.0, "perf": None, "var_jour": 0.0, "var_jour_euro": 0.0})
+    else:
+        valeur = pos["parts"] * prix
+        perf = (prix - pos["prm"]) / pos["prm"] * 100
+        if prev_close and not np.isnan(prev_close) and prev_close != 0:
+            var_jour = (prix - prev_close) / prev_close * 100
+            var_jour_euro = (prix - prev_close) * pos["parts"]
+        else:
+            var_jour = 0.0
+            var_jour_euro = 0.0
+        positions_calculees.append({"nom": pos["nom"], "prix": prix, "valeur": valeur, "perf": perf, "var_jour": var_jour, "var_jour_euro": var_jour_euro})
+        valeur_totale += valeur
+        valeur_par_enveloppe[enveloppe] += valeur
+        gain_par_enveloppe[enveloppe] += (prix - pos["prm"]) * pos["parts"]
+        if prev_close and not np.isnan(prev_close):
+            valeur_veille += pos["parts"] * prev_close
+        else:
+            valeur_veille += valeur
 
-    portfolio_rows.append({
+capital_net = capital_investi - bonus_fortuneo
+gain_net = valeur_totale - capital_net
+perf_totale = (gain_net / capital_net) * 100 if capital_net != 0 else 0
+perf_jour_euro = valeur_totale - valeur_veille
+perf_jour_pct = (perf_jour_euro / valeur_veille * 100) if valeur_veille != 0 else 0.0
 
-        "Nom": pos["nom"],
-        "Ticker": ticker,
-        "Type": pos["type"],
+# ---------- BENCHMARK ----------
+perf_bench = None
+gap = None
+bench_price = bench_prev = None
+bench_ticker = ticker_used.get(BENCHMARK_LABEL)
+if bench_ticker and bench_ticker in data and not data[bench_ticker].empty:
+    bench_series = data[bench_ticker]["Close"].squeeze()
+    bench_price = safe_last(bench_series)
+    bench_prev = get_previous_close(bench_ticker)
+    if bench_price:
+        try:
+            start_val = bench_series.loc[DATE_DEBUT.strftime("%Y-%m-%d")]
+            start_val = to_float(start_val.iloc[0]) if isinstance(start_val, pd.Series) else to_float(start_val)
+        except KeyError:
+            start_val = to_float(bench_series.iloc[0])
+        if start_val and start_val > 0:
+            perf_bench = (bench_price / start_val - 1) * 100
+            gap = perf_totale - perf_bench
 
-        "Prix": prix,
-        "Parts": pos["parts"],
-        "PRM": pos["prm"],
+perf_bench_jour = None
+gap_jour = None
+if bench_price and bench_prev and bench_prev != 0:
+    perf_bench_jour = (bench_price - bench_prev) / bench_prev * 100
+    gap_jour = perf_jour_pct - perf_bench_jour if perf_jour_pct is not None else None
 
-        "Valeur": valeur,
-        "Gain €": gain_eur,
+# ---------- INDICATEURS TECHNIQUES ----------
+anrj_current = anrj_sma20 = anrj_sma50 = anrj_rsi = anrj_ath30 = None
+if "ANRJ.PA" in data and not data["ANRJ.PA"].empty:
+    anrj_series = data["ANRJ.PA"]["Close"].squeeze()
+    anrj_current = safe_last(anrj_series)
+    if len(anrj_series) >= 20:
+        anrj_sma20 = safe_last(compute_sma(anrj_series, 20))
+        anrj_sma50 = safe_last(compute_sma(anrj_series, 50))
+        anrj_rsi = safe_last(compute_rsi(anrj_series, 14))
+        anrj_ath30 = safe_last(anrj_series.rolling(30, min_periods=1).max())
 
-        "Performance": perf_position,
-        "Var. Jour %": var_jour,
+aasi_current = aasi_sma20 = aasi_sma50 = None
+if "AASI.PA" in data and not data["AASI.PA"].empty:
+    aasi_series = data["AASI.PA"]["Close"].squeeze()
+    aasi_current = safe_last(aasi_series)
+    if len(aasi_series) >= 20:
+        aasi_sma20 = safe_last(compute_sma(aasi_series, 20))
+        aasi_sma50 = safe_last(compute_sma(aasi_series, 50))
 
-        "SMA20": sma20,
-        "SMA50": sma50,
-        "RSI": rsi14
-    })
+# Proxies analyse
+proxies_anrj_data = {t: analyze_proxy(t, data) for t in PROXIES_ANRJ}
+proxies_aasi_data = {t: analyze_proxy(t, data) for t in PROXIES_AASI}
 
-    VALEUR_TOTALE += valeur
+# ---------- SENTINELLES ----------
+sentinelle_info = {}
+for name, tickers in SENTINELLES.items():
+    prix = sma20 = None
+    for t in tickers:
+        if t in data and not data[t].empty:
+            ts = data[t]["Close"].squeeze()
+            prix = safe_last(ts)
+            if len(ts) >= 20:
+                sma20 = safe_last(compute_sma(ts, 20))
+            break
+    sentinelle_info[name] = {"prix": prix, "sma20": sma20}
 
-PORTFOLIO_DF = pd.DataFrame(portfolio_rows)
+# ---------- MACRO (FUTURES) ----------
+macro_data = {}
+for sym in ["NQ=F", "ES=F", "GC=F", "BZ=F", "^TNX", "EURUSD=X"]:
+    if sym in data and not data[sym].empty:
+        price = safe_last(data[sym]["Close"].squeeze())
+        prev = get_previous_close(sym)
+        macro_data[sym] = {"price": price, "prev_close": prev}
+    else:
+        macro_data[sym] = None
 
-# =========================================================
-# PERFORMANCE RÉELLE PORTEFEUILLE
-# =========================================================
+# ---------- RÈGLES DÉCISIONNELLES ----------
+def evaluate_hydrogen():
+    if anrj_current is None: return "⚠️ ANRJ manquant", "gray"
+    if anrj_current < 706.06: return "🚨 STOP-LOSS", "red"
+    if anrj_current > 812 and anrj_rsi and anrj_rsi > 68: return "💰 TAKE PROFIT 30%", "green"
+    if anrj_ath30 and anrj_current < anrj_ath30 * 0.95: return "🔶 ALLÉGEMENT PRÉVENTIF", "orange"
+    if anrj_sma20 and anrj_current < anrj_sma20: return "🔶 SOUS SMA20", "orange"
+    if anrj_sma50 and anrj_current > anrj_sma50: return "✅ MAINTIEN", "green"
+    return "ℹ️ SURVEILLANCE", "orange"
 
-PERFORMANCE_PORTEFEUILLE = (
-    (VALEUR_TOTALE / CAPITAL_NET) - 1
-) * 100
+def evaluate_em_asia():
+    if aasi_current is None: return "⚠️ AASI manquant", "gray"
+    if aasi_current > 60.35:
+        if aasi_series is not None:
+            highest = aasi_series.rolling(50, min_periods=1).max()
+            highest_val = safe_last(highest)
+            if highest_val and aasi_current < highest_val * 0.92: return "🎯 TRAILING STOP -8%", "red"
+        else: return "📈 TRAILING STOP ACTIF", "green"
+    if aasi_sma20 and aasi_current < aasi_sma20: return "🔶 SOUS SMA20", "orange"
+    if aasi_sma50 and aasi_current > aasi_sma50: return "✅ MAINTIEN", "green"
+    return "ℹ️ SURVEILLANCE", "orange"
 
-GAIN_NET = VALEUR_TOTALE - CAPITAL_NET
+def evaluate_sentinelles():
+    alerts = []
+    for name, info in sentinelle_info.items():
+        if info["prix"] and info["sma20"] and info["prix"] < info["sma20"]:
+            alerts.append(f"⚠️ {name} sous SMA20")
+    # Check proxies faiblesse
+    for name, prox in [("Hydrogène", proxies_anrj_data), ("EM Asia", proxies_aasi_data)]:
+        count_under = sum(1 for v in prox.values() if v and v.get("sma20") and v["prix"] < v["sma20"])
+        if count_under >= 2:
+            alerts.append(f"⚠️ {name} : {count_under}/3 proxies sous SMA20")
+    return " | ".join(alerts) if alerts else "✅ Sentinelles OK", "orange" if alerts else "green"
 
-# =========================================================
-# PERFORMANCE BENCHMARK
-# =========================================================
+def decision_finale():
+    h_msg, h_col = evaluate_hydrogen()
+    a_msg, a_col = evaluate_em_asia()
+    s_msg, s_col = evaluate_sentinelles()
+    if "red" in [h_col, a_col]:
+        msg = h_msg if h_col == "red" else a_msg
+        return f"🔴 ACTION REQUISE : {msg}", "red"
+    if "orange" in [h_col, a_col, s_col]:
+        parts = []
+        if h_col=="orange": parts.append(h_msg)
+        if a_col=="orange": parts.append(a_msg)
+        if s_col=="orange": parts.append(s_msg)
+        return f"🟡 VIGILANCE : {' | '.join(parts)}", "orange"
+    return "🟢 MAINTIEN GLOBAL", "green"
 
-PERFORMANCE_BENCHMARK = 0
+decision_globale, decision_color = decision_finale()
 
-if "MWRD.PA" in MARKET_DATA:
+# ---------- PHASES ----------
+def determine_phase(gap):
+    if gap is None: return "Données insuffisantes", "#6c757d"
+    if gap < 0:
+        return "Phase 1 : Reconquête – Revenir à l'équilibre vs World AV", "#dc3545"
+    else:
+        # Détecter si signaux faiblissants
+        signals = []
+        # ANRJ sous SMA20 ou proxies en baisse
+        if anrj_sma20 and anrj_current and anrj_current < anrj_sma20:
+            signals.append("ANRJ sous SMA20")
+        if aasi_sma20 and aasi_current and aasi_current < aasi_sma20:
+            signals.append("AASI sous SMA20")
+        for prox in proxies_anrj_data.values():
+            if prox and prox.get("sma20") and prox["prix"] < prox["sma20"]:
+                signals.append(f"Proxy {prox['prix']:.2f}<SMA20")
+                break
+        for prox in proxies_aasi_data.values():
+            if prox and prox.get("sma20") and prox["prix"] < prox["sma20"]:
+                signals.append(f"Proxy {prox['prix']:.2f}<SMA20")
+                break
+        if signals:
+            return "Phase 3 : Rotation – Sécuriser les gains (signaux faibles)", "#fd7e14"
+        return "Phase 2 : Alpha – Battre le World", "#28a745"
 
-    benchmark_close = safe_close(
-        MARKET_DATA["MWRD.PA"]
-    )
+phase_text, phase_color = determine_phase(gap)
 
-    if len(benchmark_close) > 2:
+# Cible Patrimoniale toujours affichée
+cible_world_pct = 94.0
+cible_gold_pct = 6.0
 
-        start_price = float(
-            benchmark_close.iloc[0]
-        )
+# ---------- ARBITRAGE AUTOMATIQUE ----------
+def compute_arbitrage():
+    actions = []
+    if gap is None: return actions
+    # Calcul du poids satellites
+    poids = poids_satellite if 'poids_satellite' in locals() else 0
+    for pos in [{"nom": "Global Hydrogen", "valeur": valeur_anrj, "parts": next((p["parts"] for p in POSITIONS if p["nom"]=="Global Hydrogen"), 0)},
+                {"nom": "EM Asia", "valeur": valeur_aasi, "parts": next((p["parts"] for p in POSITIONS if p["nom"]=="EM Asia"), 0)}]:
+        if pos["valeur"] <= 0: continue
+        # Si sous SMA20, ordre de vendre 25% ou nécessaire pour ramener poids <45%
+        if pos["nom"] == "Global Hydrogen" and anrj_sma20 and anrj_current and anrj_current < anrj_sma20:
+            sell_pct = 0.25
+            sell_amount = pos["valeur"] * sell_pct
+            actions.append(f"🚨 ACTION : Vendre {sell_amount:,.2f}€ de {pos['nom']} pour acheter du MSCI World AV")
+        if pos["nom"] == "EM Asia" and aasi_sma20 and aasi_current and aasi_current < aasi_sma20:
+            sell_pct = 0.25
+            sell_amount = pos["valeur"] * sell_pct
+            actions.append(f"🚨 ACTION : Vendre {sell_amount:,.2f}€ de {pos['nom']} pour acheter du MSCI World AV")
+        # Si poids > 45% sans signal technique, on peut aussi suggérer un rééquilibrage
+    if poids > 45:
+        excedent = (poids - 45) / 100 * valeur_totale
+        # proposition de réduction proportionnelle sur les deux satellites
+        actions.append(f"ℹ️ RÉÉQUILIBRAGE : Réduire satellites de {excedent:,.2f}€ pour rester sous 45%")
+    return actions
 
-        current_price = float(
-            benchmark_close.iloc[-1]
-        )
+arbitrage_actions = compute_arbitrage()
 
-        PERFORMANCE_BENCHMARK = (
-            (current_price / start_price) - 1
-        ) * 100
+# ---------- MODULE FISCAL ----------
+def calculer_net_fiscal(enveloppe, montant, val_poche, gain_poche):
+    if montant <= 0: return 0.0, ""
+    if montant > val_poche: return 0.0, "Montant supérieur à la valeur"
+    ratio = gain_poche / val_poche if val_poche else 0
+    gain_retrait = montant * ratio
+    aujourdhui = datetime.now(ZoneInfo("Europe/Paris"))
+    if enveloppe == "PEA":
+        if aujourdhui < datetime(2031,4,1, tzinfo=ZoneInfo("Europe/Paris")):
+            return 0.0, "⚠️ Retrait PEA impossible avant le 01/04/2031"
+        impots = 0.172 * gain_retrait
+        return montant - impots, ""
+    elif enveloppe == "AV":
+        if aujourdhui < datetime(2033,9,17, tzinfo=ZoneInfo("Europe/Paris")):
+            impots = 0.30 * gain_retrait
+            return montant - impots, ""
+        else:
+            abattement = 9200
+            ps = 0.172 * gain_retrait
+            ir = 0.128 * max(0, gain_retrait - abattement)
+            return montant - ps - ir, ""
+    return 0.0, ""
 
-# =========================================================
-# GAP
-# =========================================================
+# ---------- INTERFACE ----------
+now = datetime.now(ZoneInfo("Europe/Paris"))
+st.title("🛰️ Cockpit Décisionnel v2.0 Expert")
+st.caption(f"Données en temps réel – {now.strftime('%d/%m/%Y %H:%M')} (heure de Paris)")
 
-GAP = (
-    PERFORMANCE_PORTEFEUILLE
-    - PERFORMANCE_BENCHMARK
-)
+# Bannière de phase
+st.markdown(f"""
+<div style="background-color:{phase_color}; color:white; padding:0.75rem; border-radius:8px; text-align:center; font-weight:bold; margin-bottom:1rem;">
+    {phase_text}
+</div>
+""", unsafe_allow_html=True)
 
-# =========================================================
-# PHASES
-# =========================================================
+# SECTION 1 : COMMAND CENTER
+st.markdown("## 🚀 Command Center")
+with st.container():
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown('<div class="kpi-label">Valeur Totale</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="kpi-value">{valeur_totale:,.2f}€</div>', unsafe_allow_html=True)
+        st.caption(f"{perf_jour_euro:+,.2f}€ ({perf_jour_pct:+.2f}%) 24h")
+    with c2:
+        st.markdown('<div class="kpi-label">Gain Net</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="kpi-value">{gain_net:+,.2f}€</div>', unsafe_allow_html=True)
+        st.caption(f"Capital net : {capital_net:,.2f}€")
+    with c3:
+        st.markdown('<div class="kpi-label">Performance Totale</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="kpi-value">{perf_totale:+.2f}%</div>', unsafe_allow_html=True)
+        st.caption(f"{perf_jour_pct:+.2f}% ({perf_jour_euro:+,.2f}€) 24h")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-if GAP < 0:
+# Benchmark + Donut
+col_b, col_d = st.columns([1, 1])
+with col_b:
+    st.markdown("### 📊 Benchmark vs " + BENCHMARK_LABEL)
+    if perf_bench is not None:
+        st.metric("Performance " + BENCHMARK_LABEL, f"{perf_bench:+.2f}%",
+                  delta=f"{perf_bench_jour:+.2f}% 24h" if perf_bench_jour else None)
+        st.metric("GAP vs World AV", f"{gap:+.2f}%",
+                  delta=f"{gap_jour:+.2f}% 24h" if gap_jour else None)
+        if gap is not None:
+            gap_norm = max(0, min(1, (gap+5)/10))
+            st.progress(gap_norm, text=f"Écart : {gap:+.2f}%")
+    else:
+        st.info("Benchmark indisponible")
+with col_d:
+    st.markdown("### 🍩 Répartition")
+    donut_data = [p for p in positions_calculees if p["valeur"] > 0]
+    if donut_data:
+        fig = px.pie(donut_data, values='valeur', names='nom', hole=0.4)
+        fig.update_traces(textinfo='percent+label')
+        fig.update_layout(margin=dict(t=0,b=0,l=0,r=0), height=300,
+                          paper_bgcolor='#1A1D24', font=dict(color='#FFFFFF'))
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Aucune donnée")
 
-    PHASE = "PHASE 1 · RECONQUÊTE"
-    PHASE_COLOR = "#DC3545"
+# SECTION 2 : ARBITRAGE & STRATÉGIE
+st.markdown("## 📈 Stratégie & Arbitrage")
+st.markdown(f'<div class="big-verdict" style="background-color:{"#dc3545" if decision_color=="red" else "#fd7e14" if decision_color=="orange" else "#28a745"};">{decision_globale}</div>', unsafe_allow_html=True)
 
+colH, colA = st.columns(2)
+with colH:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("### 🔎 Hydrogène (ANRJ)")
+    if anrj_current:
+        c1,c2,c3 = st.columns(3)
+        c1.metric("Prix", f"{anrj_current:.2f}€")
+        c2.metric("SMA20", f"{anrj_sma20:.2f}€" if anrj_sma20 else "N/A")
+        c3.metric("RSI", f"{anrj_rsi:.1f}" if anrj_rsi else "N/A")
+        msg, col = evaluate_hydrogen()
+        status, bcol = ("Vendre", "red") if "STOP" in msg or "TAKE PROFIT" in msg else ("Surveillance", "orange") if "SOUS" in msg else ("Maintenir", "green")
+        st.markdown(f'<span class="badge badge-{bcol}">{status}</span>', unsafe_allow_html=True)
+        st.caption(msg)
+        st.markdown("**Proxies**")
+        for name, prox in proxies_anrj_data.items():
+            if prox:
+                st.write(f"{name}: {prox['prix']:.2f} | SMA20: {prox['sma20']:.2f}" if prox['sma20'] else f"{name}: {prox['prix']:.2f}")
+    else:
+        st.warning("ANRJ indisponible")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with colA:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("### 🌏 EM Asia (AASI)")
+    if aasi_current:
+        c1,c2 = st.columns(2)
+        c1.metric("Prix", f"{aasi_current:.2f}€")
+        c2.metric("SMA20", f"{aasi_sma20:.2f}€" if aasi_sma20 else "N/A")
+        msg, col = evaluate_em_asia()
+        status, bcol = ("Vendre", "red") if "TRAILING" in msg else ("Surveillance", "orange") if "SOUS" in msg else ("Maintenir", "green")
+        st.markdown(f'<span class="badge badge-{bcol}">{status}</span>', unsafe_allow_html=True)
+        st.caption(msg)
+        st.markdown("**Proxies**")
+        for name, prox in proxies_aasi_data.items():
+            if prox:
+                st.write(f"{name}: {prox['prix']:.2f} | SMA20: {prox['sma20']:.2f}" if prox['sma20'] else f"{name}: {prox['prix']:.2f}")
+    else:
+        st.warning("AASI indisponible")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Poids satellites & Arbitrage
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.markdown("### ⚖️ Poids Satellites & Arbitrage")
+valeur_anrj = next((p["valeur"] for p in positions_calculees if p["nom"]=="Global Hydrogen"), 0)
+valeur_aasi = next((p["valeur"] for p in positions_calculees if p["nom"]=="EM Asia"), 0)
+poids_satellite = (valeur_anrj + valeur_aasi) / valeur_totale * 100 if valeur_totale else 0
+st.write(f"ANRJ + EM Asia : {poids_satellite:.1f}% du portefeuille")
+st.progress(min(poids_satellite/100, 1.0))
+if arbitrage_actions:
+    for act in arbitrage_actions:
+        st.markdown(f"- {act}")
+st.markdown('</div>', unsafe_allow_html=True)
+
+# SECTION 3 : SENTINELLES & MACRO FUTURES
+st.markdown("## 🛰️ Sentinelles & Macro Futures")
+
+colS, colM = st.columns([2, 1])
+with colS:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("### 📡 Sentinelles")
+    s_msg, s_col = evaluate_sentinelles()
+    if s_msg != "✅ Sentinelles OK":
+        st.warning(s_msg)
+    else:
+        st.success(s_msg)
+    sentinel_rows = []
+    for name, info in sentinelle_info.items():
+        sentinel_rows.append({"Nom": name, "Prix": f"{info['prix']:.2f}" if info['prix'] else "N/A",
+                              "SMA20": f"{info['sma20']:.2f}" if info['sma20'] else "N/A",
+                              "Alerte": "⚠️" if (info['prix'] and info['sma20'] and info['prix'] < info['sma20']) else ""})
+    if sentinel_rows:
+        st.dataframe(pd.DataFrame(sentinel_rows), use_container_width=True, hide_index=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with colM:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("### 🌍 Flash Macro (Temps réel)")
+    # Indices
+    nq = macro_data.get("NQ=F")
+    es = macro_data.get("ES=F")
+    if nq:
+        var_nq = (nq['price'] - nq['prev_close']) / nq['prev_close'] * 100 if nq['prev_close'] else 0
+        st.metric("Nasdaq 100", f"{nq['price']:.2f}", delta=f"{var_nq:+.2f}%")
+    else: st.metric("Nasdaq 100", "N/A")
+    if es:
+        var_es = (es['price'] - es['prev_close']) / es['prev_close'] * 100 if es['prev_close'] else 0
+        st.metric("S&P 500", f"{es['price']:.2f}", delta=f"{var_es:+.2f}%")
+    else: st.metric("S&P 500", "N/A")
+    # Taux/Devises
+    tnx = macro_data.get("^TNX")
+    if tnx:
+        st.metric("US 10Y", f"{tnx['price']:.2f}%")
+    else: st.metric("US 10Y", "N/A")
+    eurusd = macro_data.get("EURUSD=X")
+    if eurusd:
+        st.metric("EUR/USD", f"{eurusd['price']:.4f}")
+    else: st.metric("EUR/USD", "N/A")
+    # Commodities
+    brent = macro_data.get("BZ=F")
+    if brent:
+        st.metric("Brent", f"{brent['price']:.2f}$")
+    else: st.metric("Brent", "N/A")
+    gold = macro_data.get("GC=F")
+    if gold:
+        var_gold = (gold['price'] - gold['prev_close']) / gold['prev_close'] * 100 if gold['prev_close'] else 0
+        st.metric("Or (GC=F)", f"{gold['price']:.2f}$", delta=f"{var_gold:+.2f}%")
+    else: st.metric("Or", "N/A")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# SECTION 4 : SIMULATEUR FISCAL
+st.markdown("## 🧮 Simulateur Fiscal")
+col_pea, col_av = st.columns(2)
+with col_pea:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("#### 🏦 PEA")
+    val = valeur_par_enveloppe["PEA"]
+    gain = gain_par_enveloppe["PEA"]
+    net, avert = calculer_net_fiscal("PEA", val, val, gain)
+    st.metric("Solde Net Estimé", f"{net:,.2f}€")
+    if avert: st.caption(avert)
+    st.markdown('</div>', unsafe_allow_html=True)
+with col_av:
+    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown("#### 🛡️ Assurance-Vie")
+    val = valeur_par_enveloppe["AV"]
+    gain = gain_par_enveloppe["AV"]
+    net, avert = calculer_net_fiscal("AV", val, val, gain)
+    st.metric("Solde Net Estimé", f"{net:,.2f}€")
+    if avert: st.caption(avert)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+st.markdown('<div class="card">', unsafe_allow_html=True)
+st.markdown("### 💸 Simuler un retrait")
+c1, c2 = st.columns(2)
+with c1:
+    montant_retrait = st.number_input("Montant à retirer (€)", min_value=0.0, value=1000.0, step=100.0)
+with c2:
+    enveloppe_retrait = st.selectbox("Enveloppe", ["PEA", "AV"])
+net_retrait, avert_retrait = calculer_net_fiscal(enveloppe_retrait, montant_retrait,
+                                                 valeur_par_enveloppe.get(enveloppe_retrait, 0.0),
+                                                 gain_par_enveloppe.get(enveloppe_retrait, 0.0))
+if avert_retrait:
+    st.warning(avert_retrait)
 else:
-
-    PHASE = "PHASE 2 · ALPHA"
-    PHASE_COLOR = "#198754"
-
-# =========================================================
-# HEADER
-# =========================================================
-
-now = datetime.now(PARIS_TZ)
-
-st.title("🛰️ Cockpit Décisionnel Expert")
-
-st.caption(
-    f"Synchronisé historique réel • "
-    f"{now.strftime('%d/%m/%Y %H:%M')} • Paris"
-)
-
-st.markdown(
-    f"""
-    <div class="phase-banner"
-         style="background:{PHASE_COLOR};">
-
-        {PHASE}
-
+    st.markdown(f"""
+    <div class="net-result">
+        <span style="font-weight:bold; color:#28a745;">Montant net après impôts :</span>
+        <span style="font-size:1.5rem; font-weight:bold; color:#FFFFFF; margin-left:0.5rem;">{net_retrait:,.2f}€</span>
     </div>
-    """,
-    unsafe_allow_html=True
-)
-
-# =========================================================
-# KPIs
-# =========================================================
-
-k1, k2, k3, k4 = st.columns(4)
-
-with k1:
-
-    st.markdown('<div class="card">',
-                unsafe_allow_html=True)
-
-    st.markdown(
-        '<div class="kpi-title">'
-        'Valeur Totale'
-        '</div>',
-
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        f'<div class="kpi-value">'
-        f'{VALEUR_TOTALE:,.2f}€'
-        f'</div>',
-
-        unsafe_allow_html=True
-    )
-
-    st.markdown('</div>',
-                unsafe_allow_html=True)
-
-with k2:
-
-    st.markdown('<div class="card">',
-                unsafe_allow_html=True)
-
-    st.markdown(
-        '<div class="kpi-title">'
-        'Gain Net'
-        '</div>',
-
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        f'<div class="kpi-value">'
-        f'{GAIN_NET:+,.2f}€'
-        f'</div>',
-
-        unsafe_allow_html=True
-    )
-
-    st.markdown('</div>',
-                unsafe_allow_html=True)
-
-with k3:
-
-    st.markdown('<div class="card">',
-                unsafe_allow_html=True)
-
-    st.markdown(
-        '<div class="kpi-title">'
-        'Performance'
-        '</div>',
-
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        f'<div class="kpi-value">'
-        f'{PERFORMANCE_PORTEFEUILLE:+.2f}%'
-        f'</div>',
-
-        unsafe_allow_html=True
-    )
-
-    st.markdown('</div>',
-                unsafe_allow_html=True)
-
-with k4:
-
-    st.markdown('<div class="card">',
-                unsafe_allow_html=True)
-
-    st.markdown(
-        '<div class="kpi-title">'
-        'GAP vs World'
-        '</div>',
-
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        f'<div class="kpi-value">'
-        f'{GAP:+.2f}%'
-        f'</div>',
-
-        unsafe_allow_html=True
-    )
-
-    st.markdown('</div>',
-                unsafe_allow_html=True)
-
-# =========================================================
-# TABLEAU POSITIONS
-# =========================================================
-
-st.markdown("## 📦 Positions")
-
-display_df = PORTFOLIO_DF.copy()
-
-# Formatage spécifique
-display_df["Prix"] = display_df.apply(
-
-    lambda row:
-
-    f"{row['Prix']:.3f}"
-
-    if row["Nom"] == "MSCI World PEA"
-
-    else f"{row['Prix']:.2f}",
-
-    axis=1
-)
-
-display_df["Parts"] = display_df.apply(
-
-    lambda row:
-
-    f"{row['Parts']:.3f}"
-
-    if row["Nom"] == "MSCI World PEA"
-
-    else f"{row['Parts']:.4f}",
-
-    axis=1
-)
-
-display_df["PRM"] = display_df["PRM"].map(
-    lambda x: f"{x:.4f}"
-)
-
-display_df["Valeur"] = display_df["Valeur"].map(
-    lambda x: f"{x:,.2f}€"
-)
-
-display_df["Gain €"] = display_df["Gain €"].map(
-    lambda x: f"{x:+,.2f}€"
-)
-
-display_df["Performance"] = display_df["Performance"].map(
-    lambda x: f"{x:+.2f}%"
-)
-
-display_df["Var. Jour %"] = display_df["Var. Jour %"].map(
-    lambda x: f"{x:+.2f}%"
-)
-
-display_df["RSI"] = display_df["RSI"].map(
-    lambda x: f"{x:.1f}"
-)
-
-st.dataframe(
-
-    display_df[
-        [
-            "Nom",
-            "Parts",
-            "Prix",
-            "PRM",
-            "Valeur",
-            "Gain €",
-            "Performance",
-            "Var. Jour %",
-            "RSI"
-        ]
-    ],
-
-    use_container_width=True,
-    hide_index=True
-)
-
-# =========================================================
-# DONUT CHART
-# =========================================================
-
-st.markdown("## 🍩 Allocation")
-
-fig = px.pie(
-
-    PORTFOLIO_DF,
-
-    values="Valeur",
-    names="Nom",
-    hole=0.55
-)
-
-fig.update_layout(
-
-    paper_bgcolor="#161B22",
-    font_color="white",
-    height=500
-)
-
-st.plotly_chart(
-    fig,
-    use_container_width=True
-)
-
-# =========================================================
-# SIGNALS SATELLITES
-# =========================================================
-
-st.markdown("## 🚨 Signaux Satellites")
-
-for _, row in PORTFOLIO_DF.iterrows():
-
-    if row["Type"] != "satellite":
-        continue
-
-    st.markdown(
-        '<div class="card">',
-        unsafe_allow_html=True
-    )
-
-    st.subheader(row["Nom"])
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    c1.metric(
-        "Prix",
-        f"{row['Prix']:.2f}€"
-    )
-
-    c2.metric(
-        "SMA20",
-        f"{row['SMA20']:.2f}€"
-    )
-
-    c3.metric(
-        "SMA50",
-        f"{row['SMA50']:.2f}€"
-    )
-
-    c4.metric(
-        "RSI",
-        f"{row['RSI']:.1f}"
-    )
-
-    SIGNAL = False
-
-    # Règle stratégique
-    if row["Prix"] < row["SMA20"]:
-        SIGNAL = True
-
-    if GAP > 5:
-        SIGNAL = True
-
-    if SIGNAL:
-
-        montant = row["Valeur"] * 0.25
-
-        st.markdown(
-
-            f"""
-            <div class="sell-alert">
-
-            🚨 Signal d'arbitrage :
-            Sécuriser {montant:,.2f}€
-            vers le MSCI World
-
-            </div>
-            """,
-
-            unsafe_allow_html=True
-        )
-
-    else:
-
-        st.markdown(
-
-            """
-            <div class="ok-alert">
-
-            ✅ Aucun signal vendeur
-
-            </div>
-            """,
-
-            unsafe_allow_html=True
-        )
-
-    # ======================
-    # PROXIES
-    # ======================
-
-    st.markdown("### 🔎 Analyse Proxies")
-
-    proxies = PROXIES.get(
-        row["Ticker"],
-        []
-    )
-
-    proxy_rows = []
-
-    for proxy in proxies:
-
-        if proxy not in MARKET_DATA:
-            continue
-
-        proxy_close = safe_close(
-            MARKET_DATA[proxy]
-        )
-
-        if proxy_close.empty:
-            continue
-
-        proxy_price = last_value(proxy_close)
-
-        proxy_sma20 = last_value(
-            compute_sma(proxy_close, 20)
-        )
-
-        proxy_rsi = last_value(
-            compute_rsi(proxy_close)
-        )
-
-        proxy_rows.append({
-
-            "Proxy": proxy,
-            "Prix": round(proxy_price, 2),
-            "SMA20": round(proxy_sma20, 2),
-            "RSI": round(proxy_rsi, 1)
-        })
-
-    if proxy_rows:
-
-        st.dataframe(
-            pd.DataFrame(proxy_rows),
-            use_container_width=True,
-            hide_index=True
-        )
-
-    st.markdown(
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-# =========================================================
-# FOOTER
-# =========================================================
+    """, unsafe_allow_html=True)
+st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown("---")
-
-st.caption(
-    "Cockpit Décisionnel • "
-    "Synchronisé avec historique réel • "
-    "Architecture robuste yFinance"
-)
+st.caption("Cockpit Décisionnel · Ne constitue pas un conseil en investissement")
