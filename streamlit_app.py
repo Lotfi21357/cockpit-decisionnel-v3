@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import plotly.express as px
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import warnings
@@ -23,7 +24,7 @@ st.sidebar.title("⚙️ Gestion Dynamique")
 
 capital_investi = st.sidebar.number_input(
     "Capital investi (€)",
-    value=13796.71,
+    value=13956.49,
     step=100.0
 )
 
@@ -37,12 +38,13 @@ bonus_fortuneo = st.sidebar.number_input(
 st.sidebar.markdown("---")
 st.sidebar.subheader("📦 Positions")
 
+# Nouvelles positions de base conformes aux captures d'écran
 POSITIONS_BASE = [
-    {"nom": "MSCI World AV",   "tickers": ["MWRD.PA", "MWRD.L", "IWDA.AS", "EUNL.DE"], "parts": 36.33, "prm": 145.09, "enveloppe": "AV"},
-    {"nom": "MSCI World PEA",  "tickers": ["DCAM.PA"],                                "parts": 481,    "prm": 5.261,  "enveloppe": "PEA"},
-    {"nom": "Global Hydrogen", "tickers": ["ANRJ.PA"],                                "parts": 4.77,   "prm": 706.06, "enveloppe": "AV"},
-    {"nom": "EM Asia",         "tickers": ["AASI.PA"],                                "parts": 40.83,  "prm": 52.48,  "enveloppe": "AV"},
-    {"nom": "Or Physique",     "tickers": ["GOLD-EUR.PA", "CGLD.PA", "GOLD.PA"],      "parts": 4.59,   "prm": 163.39, "enveloppe": "AV"},
+    {"nom": "MSCI World AV",   "tickers": ["MWRD.PA", "MWRD.L", "IWDA.AS", "EUNL.DE"], "parts": 36.33,   "prm": 140.41,  "enveloppe": "AV"},
+    {"nom": "MSCI World PEA",  "tickers": ["DCAM.PA"],                                "parts": 481.0,   "prm": 5.5937,  "enveloppe": "PEA"},
+    {"nom": "Global Hydrogen", "tickers": ["ANRJ.PA"],                                "parts": 4.7701,  "prm": 707.55,  "enveloppe": "AV"},
+    {"nom": "EM Asia",         "tickers": ["AASI.PA"],                                "parts": 40.8272, "prm": 49.96,   "enveloppe": "AV"},
+    {"nom": "Or Physique",     "tickers": ["GOLD-EUR.PA", "CGLD.PA", "GOLD.PA"],      "parts": 4.5902,  "prm": 163.39,  "enveloppe": "AV"},
 ]
 
 positions_dynamiques = []
@@ -50,13 +52,13 @@ for pos in POSITIONS_BASE:
     parts = st.sidebar.number_input(
         f"Parts {pos['nom']}",
         value=float(pos["parts"]),
-        step=0.01,
+        step=0.0001,
         key=f"parts_{pos['nom']}"
     )
     prm = st.sidebar.number_input(
         f"PRM {pos['nom']}",
         value=float(pos["prm"]),
-        step=0.01,
+        step=0.0001,
         key=f"prm_{pos['nom']}"
     )
     positions_dynamiques.append({
@@ -75,6 +77,7 @@ for pos in POSITIONS:
         reduction_par_part = bonus_fortuneo / pos["parts"]
         pos["prm"] = pos["prm"] - reduction_par_part
 
+# Benchmark : MSCI World AV
 BENCHMARK_LABEL = "MSCI World AV"
 EXTRA_TICKERS = ["CW8.PA", "^TNX", "DX-Y.NYB", "BZ=F", "BE", "NVDA", "^SOX"]
 SENTINELLES = {
@@ -124,7 +127,7 @@ def download_ticker(ticker, start):
         pass
     return pd.DataFrame()
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)   # cache réduit pour suivi plus réactif
 def load_all_data():
     start = datetime.now() - timedelta(days=500)
     data = {}
@@ -173,50 +176,7 @@ if not data:
     st.error("Aucune donnée récupérée.")
     st.stop()
 
-# ---------- PRIX FIXES AU 11/05/2026 (À commenter pour passer en direct) ----------
-prix_fixes = {
-    "ANRJ.PA": 777.90,
-    "AASI.PA": 57.44,
-    "MWRD.PA": 150.63,
-    "GOLD-EUR.PA": 159.19,
-    "DCAM.PA": 5.823
-}
-for ticker, prix in prix_fixes.items():
-    if ticker not in data:
-        data[ticker] = pd.DataFrame({"Close": [prix]}, index=[datetime.now()])
-    else:
-        if not data[ticker].empty:
-            data[ticker].loc[data[ticker].index[-1], "Close"] = prix
-
-# ---------- FONCTION GRAPHIQUE CORRIGÉE (pas de crash) ----------
-def compute_historical_value():
-    start_date = DATE_DEBUT
-    df_combined = None
-    for pos in POSITIONS:
-        t = ticker_used.get(pos["nom"])
-        if t and t in data:
-            ts = data[t]["Close"]
-            # S'assurer que ts est une Series avec index datetime
-            if isinstance(ts, pd.DataFrame):
-                ts = ts.iloc[:, 0]
-            if not isinstance(ts, pd.Series):
-                continue
-            ts = ts[ts.index >= start_date]
-            if df_combined is None:
-                df_combined = pd.DataFrame(index=ts.index)
-            df_combined[t] = ts
-    if df_combined is None or df_combined.empty:
-        return None
-    df_combined = df_combined.ffill()
-    valeur_hist = pd.Series(0.0, index=df_combined.index)
-    for pos in POSITIONS:
-        t = ticker_used.get(pos["nom"])
-        if t and t in df_combined.columns:
-            valeur_hist += pos["parts"] * df_combined[t]
-    if len(valeur_hist) == 0:
-        return None
-    val_init = valeur_hist.iloc[0]
-    return (valeur_hist / val_init) * 100 if val_init != 0 else None
+# ---------- PLUS AUCUN PRIX FIXE : 100% LIVE ----------
 
 # ---------- RÉCUPÉRATION DES TICKERS ET PRIX ----------
 ticker_used = {}
@@ -371,7 +331,7 @@ if "BE" in data and not data["BE"].empty:
     be_series = data["BE"]["Close"].squeeze()
     bloom_close = safe_last(be_series)
 
-# ---------- RÈGLES DÉCISIONNELLES (identiques à votre base) ----------
+# ---------- RÈGLES DÉCISIONNELLES ----------
 def evaluate_hydrogen():
     if anrj_current is None: return "⚠️ ANRJ manquant", "gray"
     if anrj_current < 706.06: return "🚨 STOP-LOSS : COUPURE 50% VERS WORLD", "red"
@@ -476,16 +436,17 @@ st.caption(f"Données du {now.strftime('%d/%m/%Y %H:%M')} (heure de Paris)")
 
 st.markdown("### 📊 Executive")
 col1, col2, col3 = st.columns(3)
-col1.metric("Valeur totale", f"{valeur_totale:,.2f}€", delta=f"{perf_jour_euro:+,.2f}€ (auj.)")
+# Tous les "(auj.)" deviennent "(24h)"
+col1.metric("Valeur totale", f"{valeur_totale:,.2f}€", delta=f"{perf_jour_euro:+,.2f}€ (24h)")
 col2.metric("Gain net", f"{gain_net:+,.2f}€")
-col3.metric("Performance", f"{perf_totale:+.2f}%", delta=f"{perf_jour_pct:+.2f}% (auj.)")
+col3.metric("Performance", f"{perf_totale:+.2f}%", delta=f"{perf_jour_pct:+.2f}% (24h)")
 
 if perf_bench is not None:
     col4, col5 = st.columns(2)
     col4.metric(f"Perf. {BENCHMARK_LABEL}", f"{perf_bench:+.2f}%",
-                delta=f"{perf_bench_jour:+.2f}% (auj.)" if perf_bench_jour is not None else None)
+                delta=f"{perf_bench_jour:+.2f}% (24h)" if perf_bench_jour is not None else None)
     col5.metric("GAP vs World AV", f"{gap:+.2f}%",
-                delta=f"{gap_jour:+.2f}% (auj.)" if gap_jour is not None else None)
+                delta=f"{gap_jour:+.2f}% (24h)" if gap_jour is not None else None)
 
 # Soldes nets estimés
 col_pea, col_av = st.columns(2)
@@ -504,7 +465,7 @@ for i, p in enumerate(positions_calculees):
     with cols[i]:
         prix_str = f"{p['prix']:.2f}€" if p['prix'] is not None else "N/A"
         perf_str = f"{p['perf']:+.2f}%" if p['perf'] is not None else "N/A"
-        var_jour_str = f"{p['var_jour']:+.2f}% auj." if p['var_jour'] is not None else ""
+        var_jour_str = f"{p['var_jour']:+.2f}% (24h)" if p['var_jour'] is not None else ""
         st.metric(label=p['nom'], value=prix_str, delta=perf_str)
         if var_jour_str:
             st.caption(var_jour_str)
@@ -575,31 +536,22 @@ m2.metric("DXY", f"{dxy:.2f}" if dxy else "N/A")
 m3.metric("Brent", f"{brent:.2f}$" if brent else "N/A")
 m4.metric("Bloom Energy", f"{bloom_close:.2f}$" if bloom_close else "N/A")
 
-# ---------- GRAPHIQUE (sécurisé) ----------
-port_hist = compute_historical_value()
-bench_hist = None
-if bench_ticker and bench_ticker in data and not data[bench_ticker].empty:
-    bench_series = data[bench_ticker]["Close"].squeeze()
-    if isinstance(bench_series, pd.DataFrame):
-        bench_series = bench_series.iloc[:, 0]
-    try:
-        start_idx = bench_series.index.get_loc(pd.to_datetime(DATE_DEBUT), method="ffill")
-        bench_from_start = bench_series.iloc[start_idx:]
-        if len(bench_from_start) > 0:
-            bench_hist = (bench_from_start / bench_from_start.iloc[0]) * 100
-    except:
-        pass
-
-st.subheader("📈 Performance Cumulée (base 100)")
-if port_hist is not None and bench_hist is not None:
-    combined = pd.DataFrame({"Portefeuille": port_hist, BENCHMARK_LABEL: bench_hist}).dropna()
-    st.line_chart(combined)
-elif port_hist is not None:
-    st.line_chart(port_hist)
-elif bench_hist is not None:
-    st.line_chart(bench_hist)
+# ---------- DIAGRAMME DE RÉPARTITION (donut) ----------
+st.subheader("📊 Répartition du Portefeuille")
+# Ne garder que les positions ayant une valeur > 0
+donut_data = [p for p in positions_calculees if p["valeur"] > 0]
+if donut_data:
+    fig = px.pie(
+        donut_data,
+        values='valeur',
+        names='nom',
+        hole=0.4,
+        title="Allocation actuelle"
+    )
+    fig.update_traces(textinfo='percent+label')
+    st.plotly_chart(fig, use_container_width=True)
 else:
-    st.info("Données insuffisantes pour le graphique.")
+    st.info("Aucune donnée de répartition disponible.")
 
 st.markdown("---")
 st.caption("Cockpit Décisionnel · Ne constitue pas un conseil en investissement")
