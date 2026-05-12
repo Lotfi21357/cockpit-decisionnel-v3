@@ -108,14 +108,6 @@ def safe_last(series):
         return to_float(valid[-1]) if valid.size > 0 else None
     return to_float(series)
 
-def safe_prev(series):
-    if series is None: return None
-    if isinstance(series, pd.DataFrame): series = series.squeeze()
-    if isinstance(series, pd.Series):
-        valid = series.dropna()
-        return to_float(valid.iloc[-2]) if len(valid) > 1 else safe_last(series)
-    return None
-
 def download_ticker(ticker, start):
     try:
         df = yf.download(ticker, start=start, progress=False)
@@ -124,6 +116,15 @@ def download_ticker(ticker, start):
     except:
         pass
     return pd.DataFrame()
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_previous_close(ticker):
+    """Récupère la clôture de la veille via les infos du ticker."""
+    try:
+        info = yf.Ticker(ticker).info
+        return to_float(info.get("previousClose"))
+    except:
+        return None
 
 @st.cache_data(ttl=60, show_spinner=False)   # Rafraîchissement toutes les minutes
 def load_all_data():
@@ -179,7 +180,8 @@ if not data:
 # ---------- RÉCUPÉRATION DES TICKERS ET PRIX ----------
 ticker_used = {}
 latest_prices = {}
-prev_prices = {}
+prev_close_dict = {}   # clôture veille issue de previousClose
+
 for pos in POSITIONS:
     used = None
     for t in pos["tickers"]:
@@ -190,10 +192,11 @@ for pos in POSITIONS:
     if used:
         prix = safe_last(data[used]["Close"])
         latest_prices[used] = prix
-        prev_prices[used] = safe_prev(data[used]["Close"])
+        # Récupère la vraie clôture de la veille via Yahoo Finance info
+        prev_close_dict[used] = get_previous_close(used)
     else:
         latest_prices[pos["nom"]] = None
-        prev_prices[pos["nom"]] = None
+        prev_close_dict[pos["nom"]] = None
 
 # ---------- VALEUR DU PORTEFEUILLE ET PERFORMANCES ----------
 positions_calculees = []
@@ -205,7 +208,7 @@ gain_par_enveloppe = {"PEA": 0.0, "AV": 0.0}
 for pos in POSITIONS:
     ticker = ticker_used[pos["nom"]]
     prix = latest_prices.get(ticker)
-    prix_veille = prev_prices.get(ticker)
+    prev_close = prev_close_dict.get(ticker)
     enveloppe = pos.get("enveloppe", "AV")
     if prix is None or np.isnan(prix):
         positions_calculees.append({
@@ -220,10 +223,10 @@ for pos in POSITIONS:
         valeur = pos["parts"] * prix
         perf = (prix - pos["prm"]) / pos["prm"] * 100
 
-        # Variation journalière (% et €)
-        if prix_veille is not None and not np.isnan(prix_veille) and prix_veille != 0:
-            var_jour = (prix - prix_veille) / prix_veille * 100
-            var_jour_euro = (prix - prix_veille) * pos["parts"]
+        # Variation 24h basée sur previousClose (clôture veille réelle)
+        if prev_close is not None and not np.isnan(prev_close) and prev_close != 0:
+            var_jour = (prix - prev_close) / prev_close * 100
+            var_jour_euro = (prix - prev_close) * pos["parts"]
         else:
             var_jour = 0.0
             var_jour_euro = 0.0
@@ -239,8 +242,10 @@ for pos in POSITIONS:
         valeur_totale += valeur
         valeur_par_enveloppe[enveloppe] += valeur
         gain_par_enveloppe[enveloppe] += (prix - pos["prm"]) * pos["parts"]
-        if prix_veille is not None and not np.isnan(prix_veille):
-            valeur_veille += pos["parts"] * prix_veille
+
+        # Pour la valeur totale de la veille, on utilise la même prev_close
+        if prev_close is not None and not np.isnan(prev_close):
+            valeur_veille += pos["parts"] * prev_close
         else:
             valeur_veille += valeur
 
@@ -261,7 +266,7 @@ bench_ticker = ticker_used.get(BENCHMARK_LABEL)
 if bench_ticker and bench_ticker in data and not data[bench_ticker].empty:
     bench_series = data[bench_ticker]["Close"].squeeze()
     bench_price = safe_last(bench_series)
-    bench_prev = safe_prev(bench_series)
+    bench_prev = get_previous_close(bench_ticker)   # utiliser previousClose aussi pour le benchmark
     if bench_price:
         try:
             start_val = bench_series.loc[DATE_DEBUT.strftime("%Y-%m-%d")]
@@ -453,7 +458,6 @@ st.caption(f"Données du {now.strftime('%d/%m/%Y %H:%M')} (heure de Paris)")
 
 st.markdown("### 📊 Executive")
 col1, col2, col3 = st.columns(3)
-# Delta combiné € + %
 col1.metric("Valeur totale", f"{valeur_totale:,.2f}€",
             delta=f"{perf_jour_euro:+,.2f}€ ({perf_jour_pct:+.2f}%) (24h)")
 col2.metric("Gain net", f"{gain_net:+,.2f}€")
@@ -477,15 +481,24 @@ for enveloppe, col in [("PEA", col_pea), ("AV", col_av)]:
     if avert:
         col.caption(avert)
 
-# Détail positions
+# ---------- DÉTAIL POSITIONS (valeur totale + variation) ----------
 st.markdown("#### Positions")
 cols = st.columns(len(positions_calculees))
 for i, p in enumerate(positions_calculees):
     with cols[i]:
-        prix_str = f"{p['prix']:.2f}€" if p['prix'] is not None else "N/A"
-        # Delta = variation journalière en % et €
-        delta_str = f"{p['var_jour']:+.2f}% ({p['var_jour_euro']:+.2f}€)"
-        st.metric(label=p['nom'], value=prix_str, delta=delta_str)
+        # Format spécifique pour DCAM.PA (3 décimales)
+        if p["nom"] == "MSCI World PEA" and p["prix"] is not None:
+            prix_str = f"{p['prix']:.3f}€"
+        else:
+            prix_str = f"{p['prix']:.2f}€" if p['prix'] is not None else "N/A"
+
+        valeur_str = f"{p['valeur']:,.2f}€" if p['valeur'] != 0 else "0.00€"
+        delta_str = f"{p['var_jour']:+.2f}% ({p['var_jour_euro']:+,.2f}€)"
+
+        # Affiche la valeur totale comme métrique principale, variation en delta
+        st.metric(label=p['nom'], value=valeur_str, delta=delta_str)
+        # Prix unitaire en petit
+        st.caption(f"Prix unitaire : {prix_str}")
 
 # Feu tricolore
 bg = {"red": "#dc3545", "orange": "#fd7e14", "green": "#28a745"}[decision_color]
