@@ -1,6 +1,6 @@
 # =========================================================
-# 🛰️ COCKPIT DÉCISIONNEL BOURSIER - VERSION EXPERT STABLE
-# Architecture robuste Streamlit + yFinance
+# 🛰️ COCKPIT DÉCISIONNEL BOURSIER - VERSION SYNCHRONISÉE
+# Alignée sur historique réel du portefeuille
 # =========================================================
 
 import streamlit as st
@@ -8,16 +8,14 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.express as px
-import plotly.graph_objects as go
-
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 import warnings
 
 warnings.filterwarnings("ignore")
 
 # =========================================================
-# CONFIGURATION
+# CONFIG STREAMLIT
 # =========================================================
 
 st.set_page_config(
@@ -30,7 +28,7 @@ st.set_page_config(
 PARIS_TZ = ZoneInfo("Europe/Paris")
 
 # =========================================================
-# CSS PREMIUM DARK MODE
+# CSS PREMIUM
 # =========================================================
 
 st.markdown("""
@@ -38,10 +36,6 @@ st.markdown("""
 
 .stApp {
     background-color: #0E1117;
-}
-
-.block-container {
-    padding-top: 1.2rem;
 }
 
 .card {
@@ -70,7 +64,7 @@ st.markdown("""
     border-radius: 14px;
     text-align: center;
     color: white;
-    font-size: 1.1rem;
+    font-size: 1.15rem;
     font-weight: 700;
     margin-bottom: 1rem;
 }
@@ -82,50 +76,39 @@ st.markdown("""
     padding: 1rem;
     border-radius: 12px;
     font-weight: 700;
-    margin-top: 0.8rem;
+    margin-top: 1rem;
 }
 
-.success-alert {
-    background: #0E3B2C;
+.ok-alert {
+    background: #123524;
     border: 1px solid #198754;
     color: white;
     padding: 1rem;
     border-radius: 12px;
     font-weight: 700;
-    margin-top: 0.8rem;
-}
-
-.small-muted {
-    color: #9AA4AF;
-    font-size: 0.85rem;
-}
-
-.metric-green {
-    color: #00D26A;
-}
-
-.metric-red {
-    color: #FF5B5B;
-}
-
-hr {
-    border-color: #2B313A;
+    margin-top: 1rem;
 }
 
 </style>
 """, unsafe_allow_html=True)
 
 # =========================================================
-# PORTFOLIO CONFIG
+# PARAMÈTRES HISTORIQUES RÉELS
 # =========================================================
 
-POSITIONS_BASE = [
+DATE_DEBUT = "2025-09-17"
+
+CAPITAL_NET = 13796.71
+
+BONUS_FORTUNEO = 160.0
+
+POSITIONS = [
+
     {
         "nom": "MSCI World AV",
         "ticker": "MWRD.PA",
         "parts": 36.33,
         "prm": 140.41,
-        "enveloppe": "AV",
         "type": "core"
     },
 
@@ -134,7 +117,6 @@ POSITIONS_BASE = [
         "ticker": "DCAM.PA",
         "parts": 481.0,
         "prm": 5.5937,
-        "enveloppe": "PEA",
         "type": "core"
     },
 
@@ -143,7 +125,6 @@ POSITIONS_BASE = [
         "ticker": "ANRJ.PA",
         "parts": 4.7701,
         "prm": 707.55,
-        "enveloppe": "AV",
         "type": "satellite"
     },
 
@@ -152,7 +133,6 @@ POSITIONS_BASE = [
         "ticker": "AASI.PA",
         "parts": 40.8272,
         "prm": 49.96,
-        "enveloppe": "AV",
         "type": "satellite"
     },
 
@@ -161,174 +141,111 @@ POSITIONS_BASE = [
         "ticker": "CGLD.PA",
         "parts": 4.5902,
         "prm": 163.39,
-        "enveloppe": "AV",
         "type": "gold"
     }
 ]
+
+# =========================================================
+# BONUS FORTUNEO -> AJUSTEMENT PRM PEA
+# =========================================================
+
+for pos in POSITIONS:
+
+    if pos["nom"] == "MSCI World PEA":
+
+        reduction = BONUS_FORTUNEO / pos["parts"]
+
+        pos["prm"] = pos["prm"] - reduction
+
+# =========================================================
+# PROXIES
+# =========================================================
 
 PROXIES = {
     "ANRJ.PA": ["PLUG", "BE", "NEL.OL"],
     "AASI.PA": ["TSM", "005930.KS"]
 }
 
-MACRO = [
-    "NQ=F",
-    "ES=F",
-    "^TNX",
-    "GC=F",
-    "BZ=F",
-    "EURUSD=X"
-]
-
-BENCHMARK = "MWRD.PA"
-
-# =========================================================
-# SIDEBAR
-# =========================================================
-
-st.sidebar.title("⚙️ Paramètres")
-
-capital_investi = st.sidebar.number_input(
-    "Capital investi (€)",
-    value=13956.49,
-    step=100.0
-)
-
-bonus_fortuneo = st.sidebar.number_input(
-    "Bonus Fortuneo (€)",
-    value=160.0,
-    step=10.0
-)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("📦 Positions")
-
-POSITIONS = []
-
-for pos in POSITIONS_BASE:
-
-    parts = st.sidebar.number_input(
-        f"Parts - {pos['nom']}",
-        value=float(pos["parts"]),
-        step=0.0001,
-        key=f"parts_{pos['nom']}"
-    )
-
-    prm = st.sidebar.number_input(
-        f"PRM - {pos['nom']}",
-        value=float(pos["prm"]),
-        step=0.0001,
-        key=f"prm_{pos['nom']}"
-    )
-
-    new_pos = pos.copy()
-    new_pos["parts"] = parts
-    new_pos["prm"] = prm
-
-    POSITIONS.append(new_pos)
-
-# Ajustement bonus sur MSCI World PEA
-for pos in POSITIONS:
-    if pos["nom"] == "MSCI World PEA":
-        pos["prm"] = pos["prm"] - (bonus_fortuneo / pos["parts"])
-
 # =========================================================
 # ROBUST DATA ENGINE
 # =========================================================
 
-def flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Corrige définitivement les problèmes MultiIndex yfinance.
-    """
+def flatten_columns(df):
 
     if df is None or df.empty:
         return pd.DataFrame()
 
     df = df.copy()
 
-    # MultiIndex => flatten
+    # Correction MultiIndex yfinance
     if isinstance(df.columns, pd.MultiIndex):
 
-        new_cols = []
+        df.columns = [col[0] for col in df.columns]
 
-        for col in df.columns:
-
-            if isinstance(col, tuple):
-                clean = str(col[0])
-            else:
-                clean = str(col)
-
-            new_cols.append(clean)
-
-        df.columns = new_cols
-
-    # Colonnes dupliquées
+    # Suppression colonnes dupliquées
     df = df.loc[:, ~df.columns.duplicated()]
-
-    # Standardisation
-    expected = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
-
-    for col in expected:
-        if col not in df.columns:
-            df[col] = np.nan
 
     return df
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def download_market_data(tickers, period="1y"):
+@st.cache_data(ttl=60, show_spinner=False)
+def download_data(tickers):
 
-    data_dict = {}
+    data = {}
 
     for ticker in tickers:
 
         try:
 
-            raw = yf.download(
+            df = yf.download(
                 ticker,
-                period=period,
-                auto_adjust=False,
+                start=DATE_DEBUT,
                 progress=False,
+                auto_adjust=False,
                 threads=False
             )
 
-            raw = flatten_columns(raw)
+            df = flatten_columns(df)
 
-            if raw.empty:
+            if df.empty:
                 continue
 
-            # Conversion sécurisée
-            for col in raw.columns:
-                raw[col] = pd.to_numeric(raw[col], errors="coerce")
+            # Sécurisation types
+            for col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
 
-            raw.dropna(how="all", inplace=True)
+            df.dropna(how="all", inplace=True)
 
-            if raw.empty:
+            if df.empty:
                 continue
 
-            data_dict[ticker] = raw
+            data[ticker] = df
 
         except Exception as e:
+
             print(f"Erreur téléchargement {ticker}: {e}")
 
-    return data_dict
-
+    return data
 
 # =========================================================
-# TECHNICAL INDICATORS
+# INDICATEURS TECHNIQUES
 # =========================================================
 
-def safe_series(df, column="Close"):
+def safe_close(df):
 
-    if df is None or df.empty:
+    if df is None:
         return pd.Series(dtype=float)
 
-    if column not in df.columns:
+    if df.empty:
         return pd.Series(dtype=float)
 
-    series = pd.to_numeric(df[column], errors="coerce")
+    if "Close" not in df.columns:
+        return pd.Series(dtype=float)
 
-    return series.dropna()
+    return pd.to_numeric(
+        df["Close"],
+        errors="coerce"
+    ).dropna()
 
 
 def last_value(series):
@@ -342,7 +259,15 @@ def last_value(series):
     return float(series.iloc[-1])
 
 
-def sma(series, window):
+def previous_value(series):
+
+    if len(series) < 2:
+        return None
+
+    return float(series.iloc[-2])
+
+
+def compute_sma(series, window):
 
     if len(series) < window:
         return pd.Series(dtype=float)
@@ -350,154 +275,178 @@ def sma(series, window):
     return series.rolling(window).mean()
 
 
-def rsi(series, period=14):
+def compute_rsi(series, period=14):
 
     if len(series) < period + 1:
         return pd.Series(dtype=float)
 
     delta = series.diff()
 
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    gains = delta.clip(lower=0)
+    losses = -delta.clip(upper=0)
 
-    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+    avg_gain = gains.ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = losses.ewm(alpha=1/period, adjust=False).mean()
 
     rs = avg_gain / avg_loss
 
-    rsi_calc = 100 - (100 / (1 + rs))
-
-    return rsi_calc
-
+    return 100 - (100 / (1 + rs))
 
 # =========================================================
-# LOAD DATA
+# CHARGEMENT DES DONNÉES
 # =========================================================
 
-all_tickers = []
+ALL_TICKERS = []
 
 for pos in POSITIONS:
-    all_tickers.append(pos["ticker"])
+    ALL_TICKERS.append(pos["ticker"])
 
 for arr in PROXIES.values():
-    all_tickers.extend(arr)
+    ALL_TICKERS.extend(arr)
 
-all_tickers.extend(MACRO)
+ALL_TICKERS = list(set(ALL_TICKERS))
 
-all_tickers = list(set(all_tickers))
-
-market_data = download_market_data(all_tickers)
+MARKET_DATA = download_data(ALL_TICKERS)
 
 # =========================================================
-# PORTFOLIO ENGINE
+# CALCULS PORTEFEUILLE
 # =========================================================
 
 portfolio_rows = []
 
-valeur_totale = 0
-investi_net = capital_investi - bonus_fortuneo
+VALEUR_TOTALE = 0.0
 
 for pos in POSITIONS:
 
     ticker = pos["ticker"]
 
-    if ticker not in market_data:
+    if ticker not in MARKET_DATA:
         continue
 
-    df = market_data[ticker]
+    df = MARKET_DATA[ticker]
 
-    close = safe_series(df)
+    close = safe_close(df)
 
     if close.empty:
         continue
 
-    current_price = last_value(close)
+    prix = last_value(close)
 
-    valeur = current_price * pos["parts"]
+    previous_close = previous_value(close)
 
-    perf_pct = ((current_price - pos["prm"]) / pos["prm"]) * 100
+    valeur = prix * pos["parts"]
 
     gain_eur = valeur - (pos["parts"] * pos["prm"])
 
-    sma20 = last_value(sma(close, 20))
-    sma50 = last_value(sma(close, 50))
-    rsi14 = last_value(rsi(close))
+    perf_position = ((prix / pos["prm"]) - 1) * 100
 
-    portfolio_rows.append({
-        "Nom": pos["nom"],
-        "Ticker": ticker,
-        "Type": pos["type"],
-        "Prix": current_price,
-        "Parts": pos["parts"],
-        "PRM": pos["prm"],
-        "Valeur": valeur,
-        "Performance": perf_pct,
-        "Gain €": gain_eur,
-        "SMA20": sma20,
-        "SMA50": sma50,
-        "RSI": rsi14,
-        "Enveloppe": pos["enveloppe"]
-    })
+    # Variation journalière
+    if previous_close and previous_close != 0:
 
-    valeur_totale += valeur
-
-portfolio_df = pd.DataFrame(portfolio_rows)
-
-gain_total = valeur_totale - investi_net
-performance_totale = (gain_total / investi_net) * 100
-
-# =========================================================
-# BENCHMARK
-# =========================================================
-
-benchmark_perf = 0
-gap_vs_world = 0
-
-if BENCHMARK in market_data:
-
-    bench_close = safe_series(market_data[BENCHMARK])
-
-    if len(bench_close) > 60:
-
-        start_price = bench_close.iloc[0]
-        end_price = bench_close.iloc[-1]
-
-        benchmark_perf = ((end_price / start_price) - 1) * 100
-
-        gap_vs_world = performance_totale - benchmark_perf
-
-# =========================================================
-# PHASE ENGINE
-# =========================================================
-
-phase_text = ""
-phase_color = "#198754"
-
-if gap_vs_world < 0:
-
-    phase_text = "PHASE 1 · RECONQUÊTE"
-    phase_color = "#DC3545"
-
-else:
-
-    satellite_warning = False
-
-    for _, row in portfolio_df.iterrows():
-
-        if row["Type"] == "satellite":
-
-            if row["Prix"] < row["SMA20"]:
-                satellite_warning = True
-
-    if satellite_warning:
-
-        phase_text = "PHASE 3 · ROTATION"
-        phase_color = "#FD7E14"
+        var_jour = (
+            (prix - previous_close)
+            / previous_close
+        ) * 100
 
     else:
 
-        phase_text = "PHASE 2 · ALPHA"
-        phase_color = "#198754"
+        var_jour = 0
+
+    sma20 = last_value(
+        compute_sma(close, 20)
+    )
+
+    sma50 = last_value(
+        compute_sma(close, 50)
+    )
+
+    rsi14 = last_value(
+        compute_rsi(close)
+    )
+
+    portfolio_rows.append({
+
+        "Nom": pos["nom"],
+        "Ticker": ticker,
+        "Type": pos["type"],
+
+        "Prix": prix,
+        "Parts": pos["parts"],
+        "PRM": pos["prm"],
+
+        "Valeur": valeur,
+        "Gain €": gain_eur,
+
+        "Performance": perf_position,
+        "Var. Jour %": var_jour,
+
+        "SMA20": sma20,
+        "SMA50": sma50,
+        "RSI": rsi14
+    })
+
+    VALEUR_TOTALE += valeur
+
+PORTFOLIO_DF = pd.DataFrame(portfolio_rows)
+
+# =========================================================
+# PERFORMANCE RÉELLE PORTEFEUILLE
+# =========================================================
+
+PERFORMANCE_PORTEFEUILLE = (
+    (VALEUR_TOTALE / CAPITAL_NET) - 1
+) * 100
+
+GAIN_NET = VALEUR_TOTALE - CAPITAL_NET
+
+# =========================================================
+# PERFORMANCE BENCHMARK
+# =========================================================
+
+PERFORMANCE_BENCHMARK = 0
+
+if "MWRD.PA" in MARKET_DATA:
+
+    benchmark_close = safe_close(
+        MARKET_DATA["MWRD.PA"]
+    )
+
+    if len(benchmark_close) > 2:
+
+        start_price = float(
+            benchmark_close.iloc[0]
+        )
+
+        current_price = float(
+            benchmark_close.iloc[-1]
+        )
+
+        PERFORMANCE_BENCHMARK = (
+            (current_price / start_price) - 1
+        ) * 100
+
+# =========================================================
+# GAP
+# =========================================================
+
+GAP = (
+    PERFORMANCE_PORTEFEUILLE
+    - PERFORMANCE_BENCHMARK
+)
+
+# =========================================================
+# PHASES
+# =========================================================
+
+if GAP < 0:
+
+    PHASE = "PHASE 1 · RECONQUÊTE"
+    PHASE_COLOR = "#DC3545"
+
+else:
+
+    PHASE = "PHASE 2 · ALPHA"
+    PHASE_COLOR = "#198754"
 
 # =========================================================
 # HEADER
@@ -508,117 +457,185 @@ now = datetime.now(PARIS_TZ)
 st.title("🛰️ Cockpit Décisionnel Expert")
 
 st.caption(
-    f"Temps réel • {now.strftime('%d/%m/%Y %H:%M')} • Europe/Paris"
+    f"Synchronisé historique réel • "
+    f"{now.strftime('%d/%m/%Y %H:%M')} • Paris"
 )
 
 st.markdown(
     f"""
-    <div class="phase-banner" style="background:{phase_color};">
-        {phase_text}
+    <div class="phase-banner"
+         style="background:{PHASE_COLOR};">
+
+        {PHASE}
+
     </div>
     """,
     unsafe_allow_html=True
 )
 
 # =========================================================
-# KPI SECTION
+# KPIs
 # =========================================================
 
-col1, col2, col3, col4 = st.columns(4)
+k1, k2, k3, k4 = st.columns(4)
 
-with col1:
+with k1:
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card">',
+                unsafe_allow_html=True)
 
     st.markdown(
-        '<div class="kpi-title">Valeur Totale</div>',
+        '<div class="kpi-title">'
+        'Valeur Totale'
+        '</div>',
+
         unsafe_allow_html=True
     )
 
     st.markdown(
-        f'<div class="kpi-value">{valeur_totale:,.2f}€</div>',
+        f'<div class="kpi-value">'
+        f'{VALEUR_TOTALE:,.2f}€'
+        f'</div>',
+
         unsafe_allow_html=True
     )
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>',
+                unsafe_allow_html=True)
 
-with col2:
+with k2:
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card">',
+                unsafe_allow_html=True)
 
     st.markdown(
-        '<div class="kpi-title">Gain Net</div>',
+        '<div class="kpi-title">'
+        'Gain Net'
+        '</div>',
+
         unsafe_allow_html=True
     )
-
-    color = "metric-green" if gain_total >= 0 else "metric-red"
 
     st.markdown(
-        f'<div class="kpi-value {color}">{gain_total:+,.2f}€</div>',
+        f'<div class="kpi-value">'
+        f'{GAIN_NET:+,.2f}€'
+        f'</div>',
+
         unsafe_allow_html=True
     )
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>',
+                unsafe_allow_html=True)
 
-with col3:
+with k3:
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card">',
+                unsafe_allow_html=True)
 
     st.markdown(
-        '<div class="kpi-title">Performance</div>',
+        '<div class="kpi-title">'
+        'Performance'
+        '</div>',
+
         unsafe_allow_html=True
     )
-
-    color = "metric-green" if performance_totale >= 0 else "metric-red"
 
     st.markdown(
-        f'<div class="kpi-value {color}">{performance_totale:+.2f}%</div>',
+        f'<div class="kpi-value">'
+        f'{PERFORMANCE_PORTEFEUILLE:+.2f}%'
+        f'</div>',
+
         unsafe_allow_html=True
     )
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>',
+                unsafe_allow_html=True)
 
-with col4:
+with k4:
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card">',
+                unsafe_allow_html=True)
 
     st.markdown(
-        '<div class="kpi-title">Gap vs MSCI World</div>',
+        '<div class="kpi-title">'
+        'GAP vs World'
+        '</div>',
+
         unsafe_allow_html=True
     )
-
-    color = "metric-green" if gap_vs_world >= 0 else "metric-red"
 
     st.markdown(
-        f'<div class="kpi-value {color}">{gap_vs_world:+.2f}%</div>',
+        f'<div class="kpi-value">'
+        f'{GAP:+.2f}%'
+        f'</div>',
+
         unsafe_allow_html=True
     )
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>',
+                unsafe_allow_html=True)
 
 # =========================================================
-# PORTFOLIO TABLE
+# TABLEAU POSITIONS
 # =========================================================
 
-st.markdown("## 📦 Portefeuille")
+st.markdown("## 📦 Positions")
 
-display_df = portfolio_df.copy()
+display_df = PORTFOLIO_DF.copy()
 
-display_df["Prix"] = display_df["Prix"].map(lambda x: f"{x:.2f}€")
-display_df["Valeur"] = display_df["Valeur"].map(lambda x: f"{x:,.2f}€")
-display_df["Performance"] = display_df["Performance"].map(lambda x: f"{x:+.2f}%")
-display_df["Gain €"] = display_df["Gain €"].map(lambda x: f"{x:+,.2f}€")
+# Formatage spécifique
+display_df["Prix"] = display_df.apply(
 
-# IMPORTANT : 3 décimales sur World PEA
-display_df["Parts"] = display_df.apply(
     lambda row:
-        f"{row['Parts']:.3f}"
-        if row["Nom"] == "MSCI World PEA"
-        else f"{row['Parts']:.4f}",
+
+    f"{row['Prix']:.3f}"
+
+    if row["Nom"] == "MSCI World PEA"
+
+    else f"{row['Prix']:.2f}",
+
     axis=1
 )
 
+display_df["Parts"] = display_df.apply(
+
+    lambda row:
+
+    f"{row['Parts']:.3f}"
+
+    if row["Nom"] == "MSCI World PEA"
+
+    else f"{row['Parts']:.4f}",
+
+    axis=1
+)
+
+display_df["PRM"] = display_df["PRM"].map(
+    lambda x: f"{x:.4f}"
+)
+
+display_df["Valeur"] = display_df["Valeur"].map(
+    lambda x: f"{x:,.2f}€"
+)
+
+display_df["Gain €"] = display_df["Gain €"].map(
+    lambda x: f"{x:+,.2f}€"
+)
+
+display_df["Performance"] = display_df["Performance"].map(
+    lambda x: f"{x:+.2f}%"
+)
+
+display_df["Var. Jour %"] = display_df["Var. Jour %"].map(
+    lambda x: f"{x:+.2f}%"
+)
+
+display_df["RSI"] = display_df["RSI"].map(
+    lambda x: f"{x:.1f}"
+)
+
 st.dataframe(
+
     display_df[
         [
             "Nom",
@@ -626,10 +643,13 @@ st.dataframe(
             "Prix",
             "PRM",
             "Valeur",
+            "Gain €",
             "Performance",
+            "Var. Jour %",
             "RSI"
         ]
     ],
+
     use_container_width=True,
     hide_index=True
 )
@@ -641,99 +661,146 @@ st.dataframe(
 st.markdown("## 🍩 Allocation")
 
 fig = px.pie(
-    portfolio_df,
+
+    PORTFOLIO_DF,
+
     values="Valeur",
     names="Nom",
     hole=0.55
 )
 
 fig.update_layout(
+
     paper_bgcolor="#161B22",
     font_color="white",
     height=500
 )
 
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(
+    fig,
+    use_container_width=True
+)
 
 # =========================================================
-# SATELLITE ENGINE
+# SIGNALS SATELLITES
 # =========================================================
 
-st.markdown("## 🚨 Moteur Décisionnel Satellites")
+st.markdown("## 🚨 Signaux Satellites")
 
-for _, row in portfolio_df.iterrows():
+for _, row in PORTFOLIO_DF.iterrows():
 
     if row["Type"] != "satellite":
         continue
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="card">',
+        unsafe_allow_html=True
+    )
 
     st.subheader(row["Nom"])
 
     c1, c2, c3, c4 = st.columns(4)
 
-    c1.metric("Prix", f"{row['Prix']:.2f}€")
-    c2.metric("SMA20", f"{row['SMA20']:.2f}€")
-    c3.metric("SMA50", f"{row['SMA50']:.2f}€")
-    c4.metric("RSI", f"{row['RSI']:.1f}")
+    c1.metric(
+        "Prix",
+        f"{row['Prix']:.2f}€"
+    )
 
-    sell_signal = False
+    c2.metric(
+        "SMA20",
+        f"{row['SMA20']:.2f}€"
+    )
 
+    c3.metric(
+        "SMA50",
+        f"{row['SMA50']:.2f}€"
+    )
+
+    c4.metric(
+        "RSI",
+        f"{row['RSI']:.1f}"
+    )
+
+    SIGNAL = False
+
+    # Règle stratégique
     if row["Prix"] < row["SMA20"]:
-        sell_signal = True
+        SIGNAL = True
 
-    if gap_vs_world > 5:
-        sell_signal = True
+    if GAP > 5:
+        SIGNAL = True
 
-    if sell_signal:
+    if SIGNAL:
 
-        sell_amount = row["Valeur"] * 0.25
+        montant = row["Valeur"] * 0.25
 
         st.markdown(
+
             f"""
             <div class="sell-alert">
-                🚨 VENDRE {sell_amount:,.2f}€ pour arbitrage vers MSCI World
+
+            🚨 Signal d'arbitrage :
+            Sécuriser {montant:,.2f}€
+            vers le MSCI World
+
             </div>
             """,
+
             unsafe_allow_html=True
         )
 
     else:
 
         st.markdown(
+
             """
-            <div class="success-alert">
-                ✅ Maintien de position
+            <div class="ok-alert">
+
+            ✅ Aucun signal vendeur
+
             </div>
             """,
+
             unsafe_allow_html=True
         )
 
-    # =========================
+    # ======================
     # PROXIES
-    # =========================
+    # ======================
 
-    st.markdown("### 🔎 Analyse des Proxies")
+    st.markdown("### 🔎 Analyse Proxies")
 
-    proxies = PROXIES.get(row["Ticker"], [])
+    proxies = PROXIES.get(
+        row["Ticker"],
+        []
+    )
 
     proxy_rows = []
 
     for proxy in proxies:
 
-        if proxy not in market_data:
+        if proxy not in MARKET_DATA:
             continue
 
-        proxy_close = safe_series(market_data[proxy])
+        proxy_close = safe_close(
+            MARKET_DATA[proxy]
+        )
 
         if proxy_close.empty:
             continue
 
         proxy_price = last_value(proxy_close)
-        proxy_sma20 = last_value(sma(proxy_close, 20))
-        proxy_rsi = last_value(rsi(proxy_close))
+
+        proxy_sma20 = last_value(
+            compute_sma(proxy_close, 20)
+        )
+
+        proxy_rsi = last_value(
+            compute_rsi(proxy_close)
+        )
 
         proxy_rows.append({
+
             "Proxy": proxy,
             "Prix": round(proxy_price, 2),
             "SMA20": round(proxy_sma20, 2),
@@ -748,150 +815,10 @@ for _, row in portfolio_df.iterrows():
             hide_index=True
         )
 
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# =========================================================
-# PERFORMANCE CHART
-# =========================================================
-
-st.markdown("## 📈 Évolution du Benchmark")
-
-if BENCHMARK in market_data:
-
-    benchmark_close = safe_series(market_data[BENCHMARK])
-
-    fig = go.Figure()
-
-    fig.add_trace(
-        go.Scatter(
-            x=benchmark_close.index,
-            y=benchmark_close.values,
-            mode="lines",
-            name="MSCI World"
-        )
+    st.markdown(
+        '</div>',
+        unsafe_allow_html=True
     )
-
-    fig.update_layout(
-        paper_bgcolor="#161B22",
-        plot_bgcolor="#161B22",
-        font_color="white",
-        height=450
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-# =========================================================
-# MACRO DASHBOARD
-# =========================================================
-
-st.markdown("## 🌍 Macro Dashboard")
-
-macro_cols = st.columns(3)
-
-for i, ticker in enumerate(MACRO):
-
-    if ticker not in market_data:
-        continue
-
-    close = safe_series(market_data[ticker])
-
-    if close.empty:
-        continue
-
-    current = last_value(close)
-
-    prev = close.iloc[-2] if len(close) > 2 else current
-
-    variation = ((current - prev) / prev) * 100
-
-    with macro_cols[i % 3]:
-
-        st.metric(
-            ticker,
-            f"{current:.2f}",
-            f"{variation:+.2f}%"
-        )
-
-# =========================================================
-# FISCAL SIMULATOR
-# =========================================================
-
-st.markdown("## 🧮 Simulateur Fiscal")
-
-def simulate_tax(
-    amount,
-    gain_ratio,
-    mode="flat_tax"
-):
-
-    gain_part = amount * gain_ratio
-
-    if mode == "flat_tax":
-
-        taxes = gain_part * 0.30
-
-    else:
-
-        taxes = gain_part * 0.172
-
-    return amount - taxes
-
-
-col1, col2 = st.columns(2)
-
-with col1:
-
-    withdrawal = st.number_input(
-        "Montant retrait (€)",
-        value=1000.0,
-        step=100.0
-    )
-
-with col2:
-
-    tax_mode = st.selectbox(
-        "Fiscalité",
-        ["flat_tax", "abattement_av"]
-    )
-
-gain_ratio = gain_total / valeur_totale if valeur_totale > 0 else 0
-
-net_amount = simulate_tax(
-    withdrawal,
-    gain_ratio,
-    tax_mode
-)
-
-st.success(
-    f"💰 Montant net estimé : {net_amount:,.2f}€"
-)
-
-# =========================================================
-# TARGET ALLOCATION
-# =========================================================
-
-st.markdown("## 🎯 Allocation Patrimoniale Cible")
-
-target_df = pd.DataFrame({
-    "Allocation": ["MSCI World", "Or"],
-    "Objectif": [94, 6]
-})
-
-fig = px.bar(
-    target_df,
-    x="Allocation",
-    y="Objectif",
-    text="Objectif"
-)
-
-fig.update_layout(
-    paper_bgcolor="#161B22",
-    plot_bgcolor="#161B22",
-    font_color="white",
-    height=350
-)
-
-st.plotly_chart(fig, use_container_width=True)
 
 # =========================================================
 # FOOTER
@@ -900,5 +827,7 @@ st.plotly_chart(fig, use_container_width=True)
 st.markdown("---")
 
 st.caption(
-    "Cockpit Décisionnel Expert • Architecture robuste yFinance • Streamlit Institutional Grade"
+    "Cockpit Décisionnel • "
+    "Synchronisé avec historique réel • "
+    "Architecture robuste yFinance"
 )
