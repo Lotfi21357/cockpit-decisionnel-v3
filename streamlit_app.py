@@ -37,13 +37,13 @@ bonus_fortuneo = st.sidebar.number_input(
 st.sidebar.markdown("---")
 st.sidebar.subheader("📦 Positions")
 
-# Positions de base (tickers inchangés, parts et PRM initiaux)
+# ---------- POSITIONS DE BASE AVEC ENVELOPPES ----------
 POSITIONS_BASE = [
-    {"nom": "MSCI World AV",   "tickers": ["MWRD.PA", "MWRD.L", "IWDA.AS", "EUNL.DE"], "parts": 36.33, "prm": 145.09},
-    {"nom": "MSCI World PEA",  "tickers": ["DCAM.PA"],                                "parts": 481,    "prm": 5.261},
-    {"nom": "Global Hydrogen", "tickers": ["ANRJ.PA"],                                "parts": 4.77,   "prm": 706.06},
-    {"nom": "EM Asia",         "tickers": ["AASI.PA"],                                "parts": 40.83,  "prm": 52.48},
-    {"nom": "Or Physique",     "tickers": ["CGLD.PA", "GOLD.PA"],                     "parts": 4.59,   "prm": 163.39},
+    {"nom": "MSCI World AV",   "tickers": ["MWRD.PA", "MWRD.L", "IWDA.AS", "EUNL.DE"], "parts": 36.33, "prm": 145.09, "enveloppe": "AV"},
+    {"nom": "MSCI World PEA",  "tickers": ["DCAM.PA"],                                "parts": 481,    "prm": 5.261,  "enveloppe": "PEA"},
+    {"nom": "Global Hydrogen", "tickers": ["ANRJ.PA"],                                "parts": 4.77,   "prm": 706.06, "enveloppe": "AV"},
+    {"nom": "EM Asia",         "tickers": ["AASI.PA"],                                "parts": 40.83,  "prm": 52.48,  "enveloppe": "AV"},
+    {"nom": "Or Physique",     "tickers": ["GOLD-EUR.PA", "CGLD.PA", "GOLD.PA"],      "parts": 4.59,   "prm": 163.39, "enveloppe": "AV"},
 ]
 
 positions_dynamiques = []
@@ -64,7 +64,8 @@ for pos in POSITIONS_BASE:
         "nom": pos["nom"],
         "tickers": pos["tickers"],
         "parts": parts,
-        "prm": prm
+        "prm": prm,
+        "enveloppe": pos["enveloppe"]
     })
 
 POSITIONS = positions_dynamiques
@@ -75,7 +76,7 @@ for pos in POSITIONS:
         reduction_par_part = bonus_fortuneo / pos["parts"]
         pos["prm"] = pos["prm"] - reduction_par_part
 
-# Benchmark : on utilisera la ligne MSCI World AV (et non plus CW8)
+# Benchmark : on utilisera la ligne MSCI World AV
 BENCHMARK_LABEL = "MSCI World AV"
 EXTRA_TICKERS = ["CW8.PA", "^TNX", "DX-Y.NYB", "BZ=F", "BE", "NVDA", "^SOX"]
 SENTINELLES = {
@@ -174,6 +175,25 @@ if not data:
     st.error("Aucune donnée récupérée.")
     st.stop()
 
+# ---------- PRIX FIXES AU 11/05/2026 (pour fiabilisation et actualisation) ----------
+prix_fixes = {
+    "ANRJ.PA": 777.90,
+    "AASI.PA": 57.44,
+    "MWRD.PA": 150.63,
+    "GOLD-EUR.PA": 159.19,
+    "DCAM.PA": 5.823
+}
+# On applique ces prix en les injectant dans les données
+for ticker, prix in prix_fixes.items():
+    if ticker not in data:
+        # Crée un DataFrame factice avec une seule ligne pour la date du jour
+        data[ticker] = pd.DataFrame({"Close": [prix]}, index=[datetime.now()])
+    else:
+        # Remplace le dernier prix de clôture par le prix fixe
+        if not data[ticker].empty:
+            data[ticker].loc[data[ticker].index[-1], "Close"] = prix
+
+# ---------- RÉCUPÉRATION DES TICKERS ET PRIX ----------
 ticker_used = {}
 latest_prices = {}
 prev_prices = {}
@@ -196,15 +216,17 @@ for pos in POSITIONS:
 positions_calculees = []
 valeur_totale = 0.0
 valeur_veille = 0.0
+valeur_par_enveloppe = {"PEA": 0.0, "AV": 0.0}
+gain_par_enveloppe = {"PEA": 0.0, "AV": 0.0}  # gain brut (valeur - PRM*total parts)
 for pos in POSITIONS:
     ticker = ticker_used[pos["nom"]]
     prix = latest_prices.get(ticker)
     prix_veille = prev_prices.get(ticker)
+    enveloppe = pos.get("enveloppe", "AV")
     if prix is None or np.isnan(prix):
         positions_calculees.append({"nom": pos["nom"], "prix": None, "valeur": 0.0, "perf": None, "var_jour": None})
     else:
         valeur = pos["parts"] * prix
-        # PRM a déjà été réduit du bonus pour la ligne PEA
         perf = (prix - pos["prm"]) / pos["prm"] * 100
         if prix_veille is not None and not np.isnan(prix_veille) and prix_veille != 0:
             var_jour = (prix - prix_veille) / prix_veille * 100
@@ -212,6 +234,8 @@ for pos in POSITIONS:
             var_jour = None
         positions_calculees.append({"nom": pos["nom"], "prix": prix, "valeur": valeur, "perf": perf, "var_jour": var_jour})
         valeur_totale += valeur
+        valeur_par_enveloppe[enveloppe] += valeur
+        gain_par_enveloppe[enveloppe] += (prix - pos["prm"]) * pos["parts"]
         if prix_veille is not None and not np.isnan(prix_veille):
             valeur_veille += pos["parts"] * prix_veille
         else:
@@ -245,7 +269,6 @@ if bench_ticker and bench_ticker in data and not data[bench_ticker].empty:
             perf_bench = (bench_price / start_val - 1) * 100
             gap = perf_totale - perf_bench
 
-# Variation journalière du benchmark et du gap
 perf_bench_jour = None
 gap_jour = None
 if bench_price and bench_prev and bench_prev != 0:
@@ -258,16 +281,11 @@ prix_rattrapage = None
 if gap is not None and gap < 0 and ticker_used.get("Global Hydrogen"):
     valeur_cible = capital_net * (1 + perf_bench/100)
     diff = valeur_cible - valeur_totale
-    anrj_parts = None
-    for pos in POSITIONS:
-        if pos["nom"] == "Global Hydrogen":
-            anrj_parts = pos["parts"]
-            break
+    anrj_parts = next((pos["parts"] for pos in POSITIONS if pos["nom"] == "Global Hydrogen"), None)
     if anrj_parts and anrj_parts > 0:
         anrj_prix_actuel = safe_last(data[ticker_used["Global Hydrogen"]]["Close"]) if ticker_used["Global Hydrogen"] else None
         if anrj_prix_actuel:
-            nouveau_prix = anrj_prix_actuel + (diff / anrj_parts)
-            prix_rattrapage = nouveau_prix
+            prix_rattrapage = anrj_prix_actuel + (diff / anrj_parts)
 else:
     if gap is not None and gap >= 0:
         prix_rattrapage = "Objectif atteint"
@@ -391,9 +409,55 @@ valeur_aasi = next((p["valeur"] for p in positions_calculees if p["nom"] == "EM 
 poids_satellite = (valeur_anrj + valeur_aasi) / valeur_totale * 100 if valeur_totale > 0 else 0
 alerte_risque = poids_satellite > 45
 
-now = datetime.now(ZoneInfo("Europe/Paris"))
+# ---------- MODULE FISCAL ----------
+def calculer_net_fiscal(enveloppe, montant_retrait, valeur_poche, gain_poche):
+    """
+    Calcule le montant net après impôt pour un retrait donné.
+    enveloppe : "PEA" ou "AV"
+    montant_retrait : somme brute demandée
+    valeur_poche : valeur totale actuelle de l'enveloppe
+    gain_poche : plus-value latente totale de l'enveloppe
+    Retourne (net, avertissement)
+    """
+    if montant_retrait <= 0:
+        return 0.0, ""
+    if montant_retrait > valeur_poche:
+        return 0.0, "Montant supérieur à la valeur du portefeuille."
+    ratio_gain = gain_poche / valeur_poche if valeur_poche != 0 else 0
+    gain_retrait = montant_retrait * ratio_gain
+    aujourdhui = datetime.now(ZoneInfo("Europe/Paris"))
+    
+    if enveloppe == "PEA":
+        seuil_pea = datetime(2031, 4, 1, tzinfo=ZoneInfo("Europe/Paris"))
+        if aujourdhui < seuil_pea:
+            return 0.0, "⚠️ Retrait PEA impossible avant le 01/04/2031 (clôture du plan si retrait)."
+        impots = 0.172 * gain_retrait
+        net = montant_retrait - impots
+        return net, ""
+    
+    elif enveloppe == "AV":
+        # Date d'ouverture du contrat = DATE_DEBUT (17/09/2025), 8 ans = 17/09/2033
+        maturite = datetime(2033, 9, 17, tzinfo=ZoneInfo("Europe/Paris"))
+        if aujourdhui < maturite:
+            # Moins de 8 ans : flat tax 30% sur les gains
+            impots = 0.30 * gain_retrait
+            net = montant_retrait - impots
+            return net, ""
+        else:
+            # Après 8 ans : abattement 9 200 € pour un couple marié
+            abattement = 9200
+            # Prélèvements sociaux sur la totalité des gains
+            ps = 0.172 * gain_retrait
+            # IR sur la part des gains au-dessus de l'abattement
+            ir = 0.128 * max(0, gain_retrait - abattement)
+            impots = ps + ir
+            net = montant_retrait - impots
+            return net, ""
+    else:
+        return 0.0, "Enveloppe inconnue"
 
 # ---------- INTERFACE ----------
+now = datetime.now(ZoneInfo("Europe/Paris"))
 st.title("🛰️ Cockpit Décisionnel")
 st.caption(f"Données du {now.strftime('%d/%m/%Y %H:%M')} (heure de Paris)")
 
@@ -410,6 +474,16 @@ if perf_bench is not None:
     col5.metric("GAP vs World AV", f"{gap:+.2f}%",
                 delta=f"{gap_jour:+.2f}% (auj.)" if gap_jour is not None else None)
 
+# Soldes nets estimés (retrait total hypothétique)
+col_pea, col_av = st.columns(2)
+for enveloppe, col in [("PEA", col_pea), ("AV", col_av)]:
+    val = valeur_par_enveloppe[enveloppe]
+    gain = gain_par_enveloppe[enveloppe]
+    net, avert = calculer_net_fiscal(enveloppe, val, val, gain)
+    col.metric(f"Solde Net Estimé {enveloppe}", f"{net:,.2f}€", help="Retrait total (estimation)")
+    if avert:
+        col.caption(avert)
+
 # Détail positions
 st.markdown("#### Positions")
 cols = st.columns(len(positions_calculees))
@@ -425,6 +499,18 @@ for i, p in enumerate(positions_calculees):
 # Feu tricolore
 bg = {"red": "#dc3545", "orange": "#fd7e14", "green": "#28a745"}[decision_color]
 st.markdown(f"<div class='big-verdict' style='background-color:{bg};'>{decision_globale}</div>", unsafe_allow_html=True)
+
+# Simulation de retrait fiscal (sidebar ou intégrée)
+st.sidebar.markdown("---")
+st.sidebar.subheader("🧮 Simulation retrait fiscal")
+montant_retrait = st.sidebar.number_input("Montant à retirer (€)", min_value=0.0, value=1000.0, step=100.0)
+enveloppe_retrait = st.sidebar.selectbox("Enveloppe", ["PEA", "AV"])
+valeur_poche = valeur_par_enveloppe.get(enveloppe_retrait, 0.0)
+gain_poche = gain_par_enveloppe.get(enveloppe_retrait, 0.0)
+net_retrait, avert_retrait = calculer_net_fiscal(enveloppe_retrait, montant_retrait, valeur_poche, gain_poche)
+st.sidebar.markdown(f"**Net après impôts :** {net_retrait:,.2f} €")
+if avert_retrait:
+    st.sidebar.warning(avert_retrait)
 
 # Score de risque
 st.markdown("#### ⚖️ Poids Satellites")
