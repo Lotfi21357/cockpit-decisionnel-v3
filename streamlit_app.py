@@ -1,6 +1,6 @@
 # =============================================================================
-# COCKPIT DÉCISIONNEL BOURSIER v3.0
-# Lead Dev: Claude (Anthropic) — Architecture modulaire, yfinance blindé
+# COCKPIT DÉCISIONNEL BOURSIER v3.1
+# Lead Dev: Claude (Anthropic) — Prix live via fast_info / Historique technique via download
 # =============================================================================
 
 import streamlit as st
@@ -19,7 +19,7 @@ warnings.filterwarnings("ignore")
 # =============================================================================
 
 st.set_page_config(
-    page_title="Cockpit Décisionnel v3",
+    page_title="Cockpit Décisionnel v3.1",
     page_icon="🛰️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -85,6 +85,9 @@ st.markdown("""
                  padding:0.75rem 1rem; margin:0.4rem 0; font-size:0.9rem; }
     .info-box { background:#0F1E35; border-left:4px solid #3D8BFF; border-radius:8px;
                 padding:0.75rem 1rem; margin:0.4rem 0; font-size:0.9rem; }
+    .live-badge { display:inline-block; background:#22C55E; color:#0B0E15; border-radius:4px;
+                  font-size:0.65rem; font-weight:800; padding:0.1rem 0.4rem;
+                  letter-spacing:0.5px; vertical-align:middle; margin-left:0.4rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -112,11 +115,11 @@ MACRO_TICKERS  = {
     "GC=F":     "Or ($)",
 }
 SENTINELLES = {
-    "TSMC":       ["TSM"],
-    "Samsung":    ["005930.KS"],
-    "Air Liquide":["AI.PA"],
+    "TSMC":        ["TSM"],
+    "Samsung":     ["005930.KS"],
+    "Air Liquide": ["AI.PA"],
     "Bloom Energy":["BE"],
-    "SK Hynix":   ["000660.KS"],
+    "SK Hynix":    ["000660.KS"],
 }
 DATE_DEBUT = datetime(2025, 9, 17)
 
@@ -143,8 +146,17 @@ for pos in positions_conf:
         pos["prm"] -= bonus_fortuneo / pos["parts"]
 
 # =============================================================================
-# ██████╗  BLOC 4 : DATA ENGINE — TÉLÉCHARGEMENT BLINDÉ YFINANCE
+# ██████╗  BLOC 4 : DATA ENGINE — PRIX LIVE + HISTORIQUE TECHNIQUE
 # =============================================================================
+#
+#  ARCHITECTURE v3.1 :
+#  ┌─────────────────────────────────────────────────────────────────┐
+#  │  load_all_live_prices()  ← fast_info / .info  (TTL 30s)        │
+#  │  → prix actuel + clôture veille FIABLES, sans délai            │
+#  ├─────────────────────────────────────────────────────────────────┤
+#  │  load_all_data()         ← yf.download        (TTL 90s)        │
+#  │  → séries historiques pour SMA / RSI / ADX uniquement          │
+#  └─────────────────────────────────────────────────────────────────┘
 
 def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -155,26 +167,19 @@ def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
 
-    # --- CAS 1 : MultiIndex sur les colonnes (yfinance groupe par ticker) ---
     if isinstance(df.columns, pd.MultiIndex):
         try:
             tickers_available = df.columns.get_level_values(1).unique().tolist()
             if tickers_available:
                 df = df.xs(tickers_available[0], axis=1, level=1)
         except Exception:
-            # Fallback : garder uniquement le premier niveau
             df = df.copy()
             df.columns = df.columns.get_level_values(0)
 
-    # --- CAS 2 : Supprimer colonnes entièrement nulles ---
     df = df.dropna(axis=1, how="all").copy()
-
-    # --- CAS 3 : Harmoniser les noms de colonnes ---
     df.columns = [str(c).strip() for c in df.columns]
     rename_map = {"Adj Close": "Close", "Adj_Close": "Close", "adj close": "Close"}
     df = df.rename(columns=rename_map)
-
-    # Certaines versions de yfinance renvoient 'close' (lowercase)
     lower_map = {c: c.title() for c in df.columns}
     df = df.rename(columns=lower_map)
 
@@ -187,15 +192,77 @@ def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# ── NOUVEAUTÉ v3.1 : récupération du prix live via fast_info ──────────────
+
+def fetch_live_price(tk: str) -> tuple:
+    """
+    Renvoie (prix_actuel, clôture_veille) via fast_info (prioritaire)
+    puis .info en fallback.
+    Aucun délai de 24-48h : données temps réel du dernier tick.
+    """
+    # ── Tentative 1 : fast_info (le plus rapide et fiable) ──
+    try:
+        fi = yf.Ticker(tk).fast_info
+        prix = getattr(fi, "last_price", None)
+        prev = getattr(fi, "previous_close", None)
+        if prix and float(prix) > 0:
+            return float(prix), float(prev) if prev else None
+    except Exception:
+        pass
+
+    # ── Tentative 2 : .info (plus lent mais exhaustif) ──
+    try:
+        info = yf.Ticker(tk).info
+        prix = (
+            info.get("regularMarketPrice")
+            or info.get("currentPrice")
+            or info.get("navPrice")         # pour certains ETF
+        )
+        prev = (
+            info.get("regularMarketPreviousClose")
+            or info.get("previousClose")
+        )
+        if prix and float(prix) > 0:
+            return float(prix), float(prev) if prev else None
+    except Exception:
+        pass
+
+    return None, None
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_all_live_prices() -> dict:
+    """
+    Télécharge les prix live (fast_info) pour toutes les positions + macro.
+    Cache court : 30 secondes → quasi temps réel.
+    Retourne dict { ticker: {"prix": float, "prev": float|None} }
+    """
+    all_tickers: list = []
+    for pos in POSITIONS_BASE:
+        all_tickers.extend(pos["tickers"])
+    all_tickers.extend(list(MACRO_TICKERS.keys()))
+    all_tickers.extend(PROXIES_ANRJ)
+    all_tickers.extend(PROXIES_AASI)
+    for tlist in SENTINELLES.values():
+        all_tickers.extend(tlist)
+    all_tickers = list(dict.fromkeys(all_tickers))
+
+    live: dict = {}
+    for tk in all_tickers:
+        prix, prev = fetch_live_price(tk)
+        live[tk] = {"prix": prix, "prev": prev}
+
+    return live
+
+
 @st.cache_data(ttl=90, show_spinner=False)
 def load_all_data() -> dict:
     """
-    Télécharge tous les tickers en une seule passe groupée,
-    puis un fallback ticker par ticker pour les manquants.
+    Télécharge l'historique pour SMA/RSI/ADX (indicateurs techniques).
+    Cache 90s. N'est PAS utilisé pour les prix affichés aux utilisateurs.
     """
     start = (datetime.now() - timedelta(days=520)).strftime("%Y-%m-%d")
 
-    # Construction de la liste complète (sans doublons)
     all_tickers: list = []
     for pos in POSITIONS_BASE:
         all_tickers.extend(pos["tickers"])
@@ -208,7 +275,6 @@ def load_all_data() -> dict:
 
     result: dict = {}
 
-    # ── Téléchargement groupé ──────────────────────────────────────────────
     try:
         raw = yf.download(
             all_tickers, start=start,
@@ -232,7 +298,6 @@ def load_all_data() -> dict:
         if not df.empty:
             result[all_tickers[0]] = df
 
-    # ── Fallback individuel pour les tickers manquants ─────────────────────
     missing = [tk for tk in all_tickers if tk not in result]
     for tk in missing:
         try:
@@ -246,25 +311,22 @@ def load_all_data() -> dict:
     return result
 
 
-def get_price_info(data: dict, tickers: list) -> tuple:
+def get_price_info(live_prices: dict, tickers: list) -> tuple:
     """
+    ★ v3.1 — Utilise le dict live_prices (fast_info) au lieu du DataFrame historique.
     Renvoie (prix_actuel, clôture_veille, ticker_utilisé).
     Teste les tickers dans l'ordre et renvoie le premier fonctionnel.
     """
     for tk in tickers:
-        df = data.get(tk, pd.DataFrame())
-        if df.empty:
-            continue
-        close = df["Close"].dropna()
-        if close.empty:
-            continue
-        prix = float(close.iloc[-1])
-        prev = float(close.iloc[-2]) if len(close) >= 2 else None
-        return prix, prev, tk
+        info = live_prices.get(tk, {})
+        prix = info.get("prix")
+        prev = info.get("prev")
+        if prix and float(prix) > 0:
+            return float(prix), float(prev) if prev else None, tk
     return None, None, None
 
 # =============================================================================
-# ██████╗  BLOC 5 : INDICATEURS TECHNIQUES
+# ██████╗  BLOC 5 : INDICATEURS TECHNIQUES (inchangé — base historique)
 # =============================================================================
 
 def sma(series: pd.Series, n: int):
@@ -307,17 +369,33 @@ def adx_indicator(df: pd.DataFrame, period: int = 14):
         return None
 
 
-def analyze_ticker(data: dict, ticker: str):
-    """Analyse technique complète d'un ticker. Retourne un dict ou None."""
+def analyze_ticker(data: dict, live_prices: dict, ticker: str):
+    """
+    ★ v3.1 — Analyse technique : SMA/RSI/ADX depuis l'historique (data),
+    mais prix courant depuis live_prices pour cohérence.
+    """
+    # Prix live en priorité, fallback historique
+    lp = live_prices.get(ticker, {})
+    prix_live = lp.get("prix")
+
     df = data.get(ticker, pd.DataFrame())
     if df.empty or "Close" not in df.columns:
+        if prix_live:
+            # Pas d'historique mais prix live disponible : retour partiel
+            return {"ticker": ticker, "prix": prix_live,
+                    "sma20": None, "sma50": None, "rsi": None, "adx": None, "ath30": None}
         return None
+
     close = df["Close"].dropna()
     if close.empty:
         return None
+
+    # Utilise le prix live s'il est disponible, sinon dernière valeur historique
+    prix = prix_live if (prix_live and prix_live > 0) else float(close.iloc[-1])
+
     return {
         "ticker": ticker,
-        "prix":   float(close.iloc[-1]),
+        "prix":   prix,
         "sma20":  sma(close, 20),
         "sma50":  sma(close, 50),
         "rsi":    rsi_indicator(close),
@@ -326,11 +404,12 @@ def analyze_ticker(data: dict, ticker: str):
     }
 
 # =============================================================================
-# ██████╗  BLOC 6 : CALCULS PORTEFEUILLE
+# ██████╗  BLOC 6 : CALCULS PORTEFEUILLE (utilise live_prices)
 # =============================================================================
 
 def compute_portfolio(positions_conf: list, capital_investi: float,
-                      bonus_fortuneo: float, data: dict) -> dict:
+                      bonus_fortuneo: float, live_prices: dict) -> dict:
+    """★ v3.1 — Prix et variation du jour via live_prices (fast_info), plus aucun délai."""
     positions_calculees = []
     valeur_totale = 0.0
     valeur_veille = 0.0
@@ -338,7 +417,7 @@ def compute_portfolio(positions_conf: list, capital_investi: float,
     gain_env = {"PEA": 0.0, "AV": 0.0}
 
     for pos in positions_conf:
-        prix, prev, tk_used = get_price_info(data, pos["tickers"])
+        prix, prev, tk_used = get_price_info(live_prices, pos["tickers"])
         env = pos["enveloppe"]
 
         if prix is None:
@@ -355,6 +434,7 @@ def compute_portfolio(positions_conf: list, capital_investi: float,
         perf_pct   = gain_unit / pos["prm"] * 100
         gain_total = gain_unit * pos["parts"]
 
+        # ★ prev = previous_close issu de fast_info → vraie variation du jour
         var_jour_pct = (prix - prev) / prev * 100 if prev and prev != 0 else 0.0
         var_jour_eur = (prix - prev) * pos["parts"] if prev else 0.0
 
@@ -389,15 +469,34 @@ def compute_portfolio(positions_conf: list, capital_investi: float,
     }
 
 
-def compute_benchmark(data: dict, positions_conf: list, perf_tot_pct: float) -> tuple:
+def compute_benchmark(data: dict, live_prices: dict, positions_conf: list,
+                      perf_tot_pct: float) -> tuple:
+    """
+    ★ v3.1 — Prix actuel et variation via live_prices.
+              Série historique (pour calcul de perf depuis DATE_DEBUT) via data.
+    """
     bench_pos = next((p for p in positions_conf if p["nom"] == BENCHMARK_NOM), None)
     if not bench_pos:
         return None, None, None, None
-    prix, prev, tk = get_price_info(data, bench_pos["tickers"])
-    if not prix or not tk:
+
+    prix, prev, tk = get_price_info(live_prices, bench_pos["tickers"])
+    if not prix:
         return None, None, None, None
 
-    close = data[tk]["Close"].dropna()
+    # Cherche le ticker historique correspondant (peut différer du ticker live)
+    hist_tk = tk
+    df_hist = data.get(hist_tk, pd.DataFrame())
+    if df_hist.empty:
+        for t in bench_pos["tickers"]:
+            df_hist = data.get(t, pd.DataFrame())
+            if not df_hist.empty:
+                hist_tk = t
+                break
+
+    if df_hist.empty:
+        return None, None, prix, None
+
+    close = df_hist["Close"].dropna()
     start_str = DATE_DEBUT.strftime("%Y-%m-%d")
     try:
         start_val = float(close.loc[start_str])
@@ -407,7 +506,7 @@ def compute_benchmark(data: dict, positions_conf: list, perf_tot_pct: float) -> 
 
     perf_bench   = (prix / start_val - 1) * 100 if start_val else None
     gap          = perf_tot_pct - perf_bench if perf_bench is not None else None
-    perf_bench_j = (prix - prev) / prev * 100 if prev else None
+    perf_bench_j = (prix - prev) / prev * 100 if prev and prev != 0 else None
     return perf_bench, gap, prix, perf_bench_j
 
 # =============================================================================
@@ -475,13 +574,13 @@ def evaluate_em_asia(aasi) -> tuple:
     return "ℹ️ SURVEILLANCE NEUTRE", "orange"
 
 
-def evaluate_sentinelles(data: dict) -> tuple:
+def evaluate_sentinelles(data: dict, live_prices: dict) -> tuple:
     alerts = []
     rows   = []
     for name, tickers in SENTINELLES.items():
         info = None
         for tk in tickers:
-            info = analyze_ticker(data, tk)
+            info = analyze_ticker(data, live_prices, tk)
             if info:
                 break
         alerte = ""
@@ -553,58 +652,78 @@ def compute_arbitrage(positions_calculees: list, valeur_totale: float, anrj, aas
 # ██████╗  BLOC 9 : CHARGEMENT DES DONNÉES
 # =============================================================================
 
-with st.spinner("🛰️ Chargement des données marché en cours…"):
+# ── 1. Prix live (fast_info) — TTL 30s ──────────────────────────────────────
+with st.spinner("📡 Récupération des prix en direct…"):
+    LIVE = load_all_live_prices()
+
+# ── 2. Historique technique (yf.download) — TTL 90s ─────────────────────────
+with st.spinner("📊 Chargement de l'historique technique…"):
     DATA = load_all_data()
 
-if not DATA:
-    st.error("❌ Aucune donnée récupérée. Vérifiez votre connexion internet.")
+if not LIVE:
+    st.error("❌ Aucun prix live récupéré. Vérifiez votre connexion internet.")
     st.stop()
 
-# ── Calcul portefeuille ─────────────────────────────────────────────────────
-ptf                 = compute_portfolio(positions_conf, capital_investi, bonus_fortuneo, DATA)
+# ── Calcul portefeuille (prix live) ─────────────────────────────────────────
+ptf                 = compute_portfolio(positions_conf, capital_investi, bonus_fortuneo, LIVE)
 positions_calculees = ptf["positions"]
 valeur_totale       = ptf["valeur_totale"]
 val_env             = ptf["val_env"]
 gain_env            = ptf["gain_env"]
 
-# ── Benchmark ───────────────────────────────────────────────────────────────
-perf_bench, gap, bench_prix, perf_bench_j = compute_benchmark(DATA, positions_conf, ptf["perf_tot_pct"])
+# ── Benchmark (prix live + série historique) ─────────────────────────────────
+perf_bench, gap, bench_prix, perf_bench_j = compute_benchmark(
+    DATA, LIVE, positions_conf, ptf["perf_tot_pct"]
+)
 
-# ── Analyses techniques ─────────────────────────────────────────────────────
-anrj_info  = analyze_ticker(DATA, "ANRJ.PA")
-aasi_info  = analyze_ticker(DATA, "AASI.PA")
-proxies_a  = {tk: analyze_ticker(DATA, tk) for tk in PROXIES_ANRJ}
-proxies_em = {tk: analyze_ticker(DATA, tk) for tk in PROXIES_AASI}
+# ── Analyses techniques (historique + prix live pour cohérence) ──────────────
+anrj_info  = analyze_ticker(DATA, LIVE, "ANRJ.PA")
+aasi_info  = analyze_ticker(DATA, LIVE, "AASI.PA")
+proxies_a  = {tk: analyze_ticker(DATA, LIVE, tk) for tk in PROXIES_ANRJ}
+proxies_em = {tk: analyze_ticker(DATA, LIVE, tk) for tk in PROXIES_AASI}
 
-# ── Décisions ───────────────────────────────────────────────────────────────
+# ── Décisions ────────────────────────────────────────────────────────────────
 h_msg, h_col = evaluate_hydrogen(anrj_info)
 a_msg, a_col = evaluate_em_asia(aasi_info)
-s_msg, s_col, sent_rows = evaluate_sentinelles(DATA)
+s_msg, s_col, sent_rows = evaluate_sentinelles(DATA, LIVE)
 decision_globale, decision_color = decision_finale(h_col, a_col, s_col, h_msg, a_msg, s_msg)
 phase_text, phase_color = determine_phase(gap, anrj_info, aasi_info, proxies_a, proxies_em)
 arbitrage_actions = compute_arbitrage(positions_calculees, valeur_totale, anrj_info, aasi_info)
 
-# ── Macro ────────────────────────────────────────────────────────────────────
+# ── Flash Macro — ★ v3.1 : données live uniquement ───────────────────────────
 macro_info = {}
 for sym in MACRO_TICKERS:
-    df = DATA.get(sym, pd.DataFrame())
-    if not df.empty and "Close" in df.columns:
-        close = df["Close"].dropna()
-        macro_info[sym] = {
-            "prix": float(close.iloc[-1]) if not close.empty else None,
-            "prev": float(close.iloc[-2]) if len(close) >= 2 else None,
-        }
-    else:
-        macro_info[sym] = None
+    lp = LIVE.get(sym, {})
+    prix = lp.get("prix")
+    prev = lp.get("prev")
+    macro_info[sym] = {"prix": prix, "prev": prev} if prix else None
 
 now = datetime.now(ZoneInfo("Europe/Paris"))
+
+# Compte le nombre de tickers live disponibles (pour info utilisateur)
+live_ok = sum(1 for v in LIVE.values() if v.get("prix"))
+live_total = len(LIVE)
 
 # =============================================================================
 # ██████╗  BLOC 10 : HEADER
 # =============================================================================
 
-st.title("🛰️ Cockpit Décisionnel v3.0")
-st.caption(f"Données temps réel · {now.strftime('%d/%m/%Y à %H:%M')} (Paris) · Cache 90s")
+st.title("🛰️ Cockpit Décisionnel v3.1")
+col_hd1, col_hd2 = st.columns([3, 1])
+with col_hd1:
+    st.caption(
+        f"Prix live (fast_info) · {now.strftime('%d/%m/%Y à %H:%M:%S')} (Paris) · "
+        f"Cache live 30s · Technique 90s"
+    )
+with col_hd2:
+    live_pct = live_ok / live_total * 100 if live_total else 0
+    color_badge = "#22C55E" if live_pct >= 80 else "#F97316" if live_pct >= 50 else "#EF4444"
+    st.markdown(
+        f'<div style="text-align:right; padding-top:0.2rem;">'
+        f'<span class="badge" style="background:{color_badge};color:{"#0B0E15" if live_pct>=80 else "white"};">'
+        f'📡 {live_ok}/{live_total} LIVE</span></div>',
+        unsafe_allow_html=True
+    )
 
 st.markdown(
     f'<div class="phase-banner" style="background-color:{phase_color}; color:white;">'
@@ -625,13 +744,13 @@ c1, c2, c3, c4 = st.columns(4)
 
 with c1:
     st.markdown('<div class="card card-accent">', unsafe_allow_html=True)
-    st.markdown('<div class="kpi-label">Valeur Totale</div>', unsafe_allow_html=True)
+    st.markdown('<div class="kpi-label">Valeur Totale <span class="live-badge">LIVE</span></div>', unsafe_allow_html=True)
     st.markdown(f'<div class="kpi-value">{valeur_totale:,.2f}€</div>', unsafe_allow_html=True)
     clr = "pos" if ptf["perf_j_eur"] >= 0 else "neg"
     st.markdown(
         f'<div class="kpi-delta-{clr}">'
         f'{sign_str(ptf["perf_j_eur"])}{ptf["perf_j_eur"]:,.2f}€ '
-        f'({sign_str(ptf["perf_j_pct"])}{ptf["perf_j_pct"]:.2f}%) 24h</div>',
+        f'({sign_str(ptf["perf_j_pct"])}{ptf["perf_j_pct"]:.2f}%) vs clôture veille</div>',
         unsafe_allow_html=True
     )
     st.markdown('</div>', unsafe_allow_html=True)
@@ -662,13 +781,13 @@ with c3:
 
 with c4:
     st.markdown('<div class="card card-accent">', unsafe_allow_html=True)
-    st.markdown('<div class="kpi-label">Benchmark MSCI World</div>', unsafe_allow_html=True)
+    st.markdown('<div class="kpi-label">Benchmark MSCI World <span class="live-badge">LIVE</span></div>', unsafe_allow_html=True)
     if perf_bench is not None:
         pb_clr = "#22C55E" if perf_bench >= 0 else "#EF4444"
         st.markdown(f'<div class="kpi-value" style="color:{pb_clr};">{sign_str(perf_bench)}{perf_bench:.2f}%</div>', unsafe_allow_html=True)
-        if perf_bench_j:
+        if perf_bench_j is not None:
             pj_clr = "pos" if perf_bench_j >= 0 else "neg"
-            st.markdown(f'<div class="kpi-delta-{pj_clr}">{sign_str(perf_bench_j)}{perf_bench_j:.2f}% 24h</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="kpi-delta-{pj_clr}">{sign_str(perf_bench_j)}{perf_bench_j:.2f}% vs clôture veille</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="kpi-value">N/A</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -687,11 +806,11 @@ with col_tab:
         rows.append({
             "Position":     p["nom"],
             "Env.":         p["enveloppe"],
-            "Prix":         prix_f,
+            "Prix (live)":  prix_f,
             "Valeur (€)":   f"{p['valeur']:,.2f}",
             "Perf.":        perf_f,
-            "Var. 24h (%)": vj_f,
-            "Var. 24h (€)": vje_f,
+            "Var. Jour (%)":vj_f,
+            "Var. Jour (€)":vje_f,
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
@@ -730,10 +849,10 @@ def render_satellite(title, info, msg, col, proxies):
     st.markdown(f"### {title}")
     if info:
         mc = st.columns(4)
-        mc[0].metric("Prix",  f"{info['prix']:.2f}€")
-        mc[1].metric("SMA20", f"{info['sma20']:.2f}€" if info["sma20"] else "–")
-        mc[2].metric("SMA50", f"{info['sma50']:.2f}€" if info["sma50"] else "–")
-        mc[3].metric("RSI",   f"{info['rsi']:.1f}"   if info["rsi"]   else "–")
+        mc[0].metric("Prix (live)", f"{info['prix']:.2f}€")
+        mc[1].metric("SMA20",       f"{info['sma20']:.2f}€" if info["sma20"] else "–")
+        mc[2].metric("SMA50",       f"{info['sma50']:.2f}€" if info["sma50"] else "–")
+        mc[3].metric("RSI",         f"{info['rsi']:.1f}"   if info["rsi"]   else "–")
         adx_v = info.get("adx")
         extra = f" · ADX {adx_v:.1f}" if adx_v else ""
         st.markdown(
@@ -820,17 +939,20 @@ with col_sent:
 
 with col_macro:
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown("### 🌍 Flash Macro")
+    st.markdown("### 🌍 Flash Macro <span class='live-badge'>LIVE</span>", unsafe_allow_html=True)
     FMT = {"NQ=F": ".2f", "ES=F": ".2f", "^TNX": ".3f", "EURUSD=X": ".4f", "BZ=F": ".2f", "GC=F": ".2f"}
     SFX = {"^TNX": "%", "BZ=F": "$", "GC=F": "$", "NQ=F": "", "ES=F": "", "EURUSD=X": ""}
     for sym, label in MACRO_TICKERS.items():
         info = macro_info.get(sym)
-        if info and info["prix"]:
+        if info and info.get("prix"):
             p_val = info["prix"]
-            prev  = info["prev"]
-            delta = f'{sign_str((p_val-prev)/prev*100)}{(p_val-prev)/prev*100:.2f}%' if prev and prev != 0 else None
-            fmt   = FMT.get(sym, ".2f")
-            sfx   = SFX.get(sym, "")
+            prev  = info.get("prev")
+            delta = (
+                f'{sign_str((p_val-prev)/prev*100)}{(p_val-prev)/prev*100:.2f}%'
+                if prev and prev != 0 else None
+            )
+            fmt = FMT.get(sym, ".2f")
+            sfx = SFX.get(sym, "")
             st.metric(label, f"{p_val:{fmt}}{sfx}", delta=delta)
         else:
             st.metric(label, "N/A")
@@ -904,7 +1026,10 @@ st.markdown('</div>', unsafe_allow_html=True)
 st.markdown("---")
 col_f1, col_f2 = st.columns([4, 1])
 with col_f1:
-    st.caption("🛰️ Cockpit Décisionnel v3.0 · Outil personnel — Ne constitue pas un conseil en investissement")
+    st.caption(
+        "🛰️ Cockpit Décisionnel v3.1 · Prix live via yf.fast_info (30s) · "
+        "Indicateurs techniques via yf.download (90s) · Outil personnel — Ne constitue pas un conseil en investissement"
+    )
 with col_f2:
     if st.button("🔄 Rafraîchir"):
         st.cache_data.clear()
