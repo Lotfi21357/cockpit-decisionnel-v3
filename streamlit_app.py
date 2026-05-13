@@ -1,7 +1,8 @@
 # =============================================================================
-# COCKPIT DÉCISIONNEL BOURSIER v3.2
+# COCKPIT DÉCISIONNEL BOURSIER v3.3
 # Lead Dev: Claude (Anthropic) — Prix live via fast_info / Historique technique via download
 # v3.2 : Ajustement patrimonial (Bonus Fortuneo + TBC) + Capital réel sorti banque
+# v3.3 : Correction source Or → OR-EUR.PA (Euronext Paris) + DE000SLA8RU8.SG (Stuttgart)
 # =============================================================================
 
 import streamlit as st
@@ -20,7 +21,7 @@ warnings.filterwarnings("ignore")
 # =============================================================================
 
 st.set_page_config(
-    page_title="Cockpit Décisionnel v3.2",
+    page_title="Cockpit Décisionnel v3.3",
     page_icon="🛰️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -105,7 +106,10 @@ POSITIONS_BASE = [
     {"nom": "MSCI World PEA",  "tickers": ["DCAM.PA"],                      "parts": 481.0,   "prm": 5.5937,  "enveloppe": "PEA"},
     {"nom": "Global Hydrogen", "tickers": ["ANRJ.PA"],                      "parts": 4.7701,  "prm": 707.55,  "enveloppe": "AV"},
     {"nom": "EM Asia",         "tickers": ["AASI.PA"],                      "parts": 40.8272, "prm": 49.96,   "enveloppe": "AV"},
-    {"nom": "Or Physique",     "tickers": ["CGLD.PA","GOLD.PA"],            "parts": 4.5902,  "prm": 163.39,  "enveloppe": "AV"},
+    # ★ v3.3 : OR-EUR.PA (Euronext Paris, prix en €) en source principale
+    #           DE000SLA8RU8.SG (iNAV Stuttgart) en fallback fiable
+    #           Anciens tickers conservés en dernier recours uniquement
+    {"nom": "Or Physique",     "tickers": ["OR-EUR.PA","DE000SLA8RU8.SG","CGLD.PA","GOLD.PA"], "parts": 4.5902, "prm": 163.39, "enveloppe": "AV"},
 ]
 
 # ── ★ v3.2 : Constantes patrimoniales ─────────────────────────────────────────
@@ -696,7 +700,7 @@ live_total = len(LIVE)
 # ██████╗  BLOC 10 : HEADER
 # =============================================================================
 
-st.title("🛰️ Cockpit Décisionnel v3.2")
+st.title("🛰️ Cockpit Décisionnel v3.3")
 col_hd1, col_hd2 = st.columns([3, 1])
 with col_hd1:
     st.caption(
@@ -837,7 +841,7 @@ with col_tab:
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-    # ★ v3.2 — Ligne récapitulative d'ajustement patrimonial
+    # ★ v3.3 — Ligne récapitulative d'ajustement patrimonial
     st.markdown(
         f'<div class="info-box" style="margin-top:0.5rem;">'
         f'<b>Ajustement patrimonial :</b> +{ptf["ajustement_pat"]:,.2f}€ '
@@ -845,6 +849,29 @@ with col_tab:
         f'Solde total = <b>{solde_total:,.2f}€</b></div>',
         unsafe_allow_html=True
     )
+    # ★ v3.3 — Diagnostic source Or en temps réel
+    or_pos = next((p for p in positions_calculees if p["nom"] == "Or Physique"), None)
+    if or_pos and or_pos.get("ticker"):
+        or_ticker = or_pos["ticker"]
+        or_prix   = or_pos["prix"]
+        source_label = {
+            "OR-EUR.PA":       "✅ OR-EUR.PA (Euronext Paris — source principale)",
+            "DE000SLA8RU8.SG": "🔄 DE000SLA8RU8.SG (Stuttgart iNAV — fallback #1)",
+            "CGLD.PA":         "⚠️ CGLD.PA (fallback #2 — cours potentiellement inexact)",
+            "GOLD.PA":         "⚠️ GOLD.PA (fallback #3 — cours potentiellement inexact)",
+        }.get(or_ticker, f"❓ {or_ticker} (source inconnue)")
+        box_style = "info-box" if or_ticker in ("OR-EUR.PA", "DE000SLA8RU8.SG") else "alert-box"
+        st.markdown(
+            f'<div class="{box_style}" style="margin-top:0.3rem;">'
+            f'<b>Source Or :</b> {source_label} · Prix = <b>{or_prix:.3f}€</b></div>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            '<div class="alert-box" style="margin-top:0.3rem;">'
+            '⚠️ <b>Or Physique :</b> aucun prix récupéré — tous les tickers ont échoué</div>',
+            unsafe_allow_html=True
+        )
 
 with col_pie:
     donut_data = [p for p in positions_calculees if p["valeur"] > 0]
@@ -1059,7 +1086,7 @@ st.markdown("---")
 col_f1, col_f2 = st.columns([4, 1])
 with col_f1:
     st.caption(
-        "🛰️ Cockpit Décisionnel v3.2 · Prix live via yf.fast_info (30s) · "
+        "🛰️ Cockpit Décisionnel v3.3 · Prix live via yf.fast_info (30s) · "
         "Indicateurs techniques via yf.download (90s) · "
         f"Ajust. patrimonial {ajustement_pat:,.2f}€ · Capital réel {capital_reel:,.2f}€ · "
         "Outil personnel — Ne constitue pas un conseil en investissement"
