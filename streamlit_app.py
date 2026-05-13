@@ -1,6 +1,7 @@
 # =============================================================================
-# COCKPIT DÉCISIONNEL BOURSIER v3.1
+# COCKPIT DÉCISIONNEL BOURSIER v3.2
 # Lead Dev: Claude (Anthropic) — Prix live via fast_info / Historique technique via download
+# v3.2 : Ajustement patrimonial (Bonus Fortuneo + TBC) + Capital réel sorti banque
 # =============================================================================
 
 import streamlit as st
@@ -19,7 +20,7 @@ warnings.filterwarnings("ignore")
 # =============================================================================
 
 st.set_page_config(
-    page_title="Cockpit Décisionnel v3.1",
+    page_title="Cockpit Décisionnel v3.2",
     page_icon="🛰️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -88,6 +89,10 @@ st.markdown("""
     .live-badge { display:inline-block; background:#22C55E; color:#0B0E15; border-radius:4px;
                   font-size:0.65rem; font-weight:800; padding:0.1rem 0.4rem;
                   letter-spacing:0.5px; vertical-align:middle; margin-left:0.4rem; }
+    /* ── Ajustement badge ── */
+    .adj-badge { display:inline-block; background:#6366F1; color:white; border-radius:4px;
+                 font-size:0.65rem; font-weight:800; padding:0.1rem 0.4rem;
+                 letter-spacing:0.5px; vertical-align:middle; margin-left:0.4rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -102,6 +107,14 @@ POSITIONS_BASE = [
     {"nom": "EM Asia",         "tickers": ["AASI.PA"],                      "parts": 40.8272, "prm": 49.96,   "enveloppe": "AV"},
     {"nom": "Or Physique",     "tickers": ["CGLD.PA","GOLD.PA"],            "parts": 4.5902,  "prm": 163.39,  "enveloppe": "AV"},
 ]
+
+# ── ★ v3.2 : Constantes patrimoniales ─────────────────────────────────────────
+# Capital réellement sorti du compte bancaire (hors bonus)
+CAPITAL_REEL_SORTI_BANQUE: float = 13_796.71
+
+# Ajustement = Bonus Fortuneo (160 €) + Plus-values réalisées réinvesties TBC (59.97 €)
+AJUSTEMENT_PATRIMONIAL: float    = 219.97
+# ─────────────────────────────────────────────────────────────────────────────
 
 BENCHMARK_NOM  = "MSCI World AV"
 PROXIES_ANRJ   = ["PLUG", "BE", "NEL.OL"]
@@ -128,8 +141,21 @@ DATE_DEBUT = datetime(2025, 9, 17)
 # =============================================================================
 
 st.sidebar.markdown("## ⚙️ Paramètres")
-capital_investi = st.sidebar.number_input("Capital investi (€)", value=13956.49, step=100.0, format="%.2f")
-bonus_fortuneo  = st.sidebar.number_input("Bonus Fortuneo (€)",  value=160.0,   step=10.0,  format="%.2f")
+
+# ── ★ v3.2 : Les deux constantes sont éditables en sidebar pour flexibilité ──
+capital_reel   = st.sidebar.number_input(
+    "Capital réel sorti banque (€)",
+    value=CAPITAL_REEL_SORTI_BANQUE, step=100.0, format="%.2f"
+)
+ajustement_pat = st.sidebar.number_input(
+    "Ajustement patrimonial (€) [Bonus + TBC]",
+    value=AJUSTEMENT_PATRIMONIAL, step=1.0, format="%.2f",
+    help="Bonus Fortuneo (160 €) + Plus-values réalisées réinvesties TBC (59.97 €)"
+)
+
+# Conservé pour rétrocompatibilité des calculs fiscaux (PEA PRM déduction)
+bonus_fortuneo = st.sidebar.number_input("Bonus Fortuneo seul (€, PRM PEA)", value=160.0, step=10.0, format="%.2f")
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📦 Positions")
 
@@ -148,25 +174,10 @@ for pos in positions_conf:
 # =============================================================================
 # ██████╗  BLOC 4 : DATA ENGINE — PRIX LIVE + HISTORIQUE TECHNIQUE
 # =============================================================================
-#
-#  ARCHITECTURE v3.1 :
-#  ┌─────────────────────────────────────────────────────────────────┐
-#  │  load_all_live_prices()  ← fast_info / .info  (TTL 30s)        │
-#  │  → prix actuel + clôture veille FIABLES, sans délai            │
-#  ├─────────────────────────────────────────────────────────────────┤
-#  │  load_all_data()         ← yf.download        (TTL 90s)        │
-#  │  → séries historiques pour SMA / RSI / ADX uniquement          │
-#  └─────────────────────────────────────────────────────────────────┘
 
 def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Normalise n'importe quel DataFrame renvoyé par yfinance.
-    Gère : MultiIndex colonnes, colonnes vides, noms incohérents.
-    Renvoie toujours un DataFrame à colonnes plates avec 'Close' ou DataFrame vide.
-    """
     if df is None or df.empty:
         return pd.DataFrame()
-
     if isinstance(df.columns, pd.MultiIndex):
         try:
             tickers_available = df.columns.get_level_values(1).unique().tolist()
@@ -175,32 +186,21 @@ def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
         except Exception:
             df = df.copy()
             df.columns = df.columns.get_level_values(0)
-
     df = df.dropna(axis=1, how="all").copy()
     df.columns = [str(c).strip() for c in df.columns]
     rename_map = {"Adj Close": "Close", "Adj_Close": "Close", "adj close": "Close"}
     df = df.rename(columns=rename_map)
     lower_map = {c: c.title() for c in df.columns}
     df = df.rename(columns=lower_map)
-
     if "Close" not in df.columns:
         return pd.DataFrame()
-
     df = df.dropna(subset=["Close"])
     df.index = pd.to_datetime(df.index)
     df = df.sort_index()
     return df
 
 
-# ── NOUVEAUTÉ v3.1 : récupération du prix live via fast_info ──────────────
-
 def fetch_live_price(tk: str) -> tuple:
-    """
-    Renvoie (prix_actuel, clôture_veille) via fast_info (prioritaire)
-    puis .info en fallback.
-    Aucun délai de 24-48h : données temps réel du dernier tick.
-    """
-    # ── Tentative 1 : fast_info (le plus rapide et fiable) ──
     try:
         fi = yf.Ticker(tk).fast_info
         prix = getattr(fi, "last_price", None)
@@ -209,14 +209,12 @@ def fetch_live_price(tk: str) -> tuple:
             return float(prix), float(prev) if prev else None
     except Exception:
         pass
-
-    # ── Tentative 2 : .info (plus lent mais exhaustif) ──
     try:
         info = yf.Ticker(tk).info
         prix = (
             info.get("regularMarketPrice")
             or info.get("currentPrice")
-            or info.get("navPrice")         # pour certains ETF
+            or info.get("navPrice")
         )
         prev = (
             info.get("regularMarketPreviousClose")
@@ -226,17 +224,11 @@ def fetch_live_price(tk: str) -> tuple:
             return float(prix), float(prev) if prev else None
     except Exception:
         pass
-
     return None, None
 
 
 @st.cache_data(ttl=30, show_spinner=False)
 def load_all_live_prices() -> dict:
-    """
-    Télécharge les prix live (fast_info) pour toutes les positions + macro.
-    Cache court : 30 secondes → quasi temps réel.
-    Retourne dict { ticker: {"prix": float, "prev": float|None} }
-    """
     all_tickers: list = []
     for pos in POSITIONS_BASE:
         all_tickers.extend(pos["tickers"])
@@ -246,23 +238,16 @@ def load_all_live_prices() -> dict:
     for tlist in SENTINELLES.values():
         all_tickers.extend(tlist)
     all_tickers = list(dict.fromkeys(all_tickers))
-
     live: dict = {}
     for tk in all_tickers:
         prix, prev = fetch_live_price(tk)
         live[tk] = {"prix": prix, "prev": prev}
-
     return live
 
 
 @st.cache_data(ttl=90, show_spinner=False)
 def load_all_data() -> dict:
-    """
-    Télécharge l'historique pour SMA/RSI/ADX (indicateurs techniques).
-    Cache 90s. N'est PAS utilisé pour les prix affichés aux utilisateurs.
-    """
     start = (datetime.now() - timedelta(days=520)).strftime("%Y-%m-%d")
-
     all_tickers: list = []
     for pos in POSITIONS_BASE:
         all_tickers.extend(pos["tickers"])
@@ -272,9 +257,7 @@ def load_all_data() -> dict:
     for tlist in SENTINELLES.values():
         all_tickers.extend(tlist)
     all_tickers = list(dict.fromkeys(all_tickers))
-
     result: dict = {}
-
     try:
         raw = yf.download(
             all_tickers, start=start,
@@ -283,7 +266,6 @@ def load_all_data() -> dict:
         )
     except Exception:
         raw = pd.DataFrame()
-
     if not raw.empty and isinstance(raw.columns, pd.MultiIndex):
         for tk in all_tickers:
             try:
@@ -297,7 +279,6 @@ def load_all_data() -> dict:
         df = normalize_df(raw.copy())
         if not df.empty:
             result[all_tickers[0]] = df
-
     missing = [tk for tk in all_tickers if tk not in result]
     for tk in missing:
         try:
@@ -307,16 +288,10 @@ def load_all_data() -> dict:
                 result[tk] = df
         except Exception:
             pass
-
     return result
 
 
 def get_price_info(live_prices: dict, tickers: list) -> tuple:
-    """
-    ★ v3.1 — Utilise le dict live_prices (fast_info) au lieu du DataFrame historique.
-    Renvoie (prix_actuel, clôture_veille, ticker_utilisé).
-    Teste les tickers dans l'ordre et renvoie le premier fonctionnel.
-    """
     for tk in tickers:
         info = live_prices.get(tk, {})
         prix = info.get("prix")
@@ -326,7 +301,7 @@ def get_price_info(live_prices: dict, tickers: list) -> tuple:
     return None, None, None
 
 # =============================================================================
-# ██████╗  BLOC 5 : INDICATEURS TECHNIQUES (inchangé — base historique)
+# ██████╗  BLOC 5 : INDICATEURS TECHNIQUES
 # =============================================================================
 
 def sma(series: pd.Series, n: int):
@@ -370,29 +345,18 @@ def adx_indicator(df: pd.DataFrame, period: int = 14):
 
 
 def analyze_ticker(data: dict, live_prices: dict, ticker: str):
-    """
-    ★ v3.1 — Analyse technique : SMA/RSI/ADX depuis l'historique (data),
-    mais prix courant depuis live_prices pour cohérence.
-    """
-    # Prix live en priorité, fallback historique
     lp = live_prices.get(ticker, {})
     prix_live = lp.get("prix")
-
     df = data.get(ticker, pd.DataFrame())
     if df.empty or "Close" not in df.columns:
         if prix_live:
-            # Pas d'historique mais prix live disponible : retour partiel
             return {"ticker": ticker, "prix": prix_live,
                     "sma20": None, "sma50": None, "rsi": None, "adx": None, "ath30": None}
         return None
-
     close = df["Close"].dropna()
     if close.empty:
         return None
-
-    # Utilise le prix live s'il est disponible, sinon dernière valeur historique
     prix = prix_live if (prix_live and prix_live > 0) else float(close.iloc[-1])
-
     return {
         "ticker": ticker,
         "prix":   prix,
@@ -404,17 +368,28 @@ def analyze_ticker(data: dict, live_prices: dict, ticker: str):
     }
 
 # =============================================================================
-# ██████╗  BLOC 6 : CALCULS PORTEFEUILLE (utilise live_prices)
+# ██████╗  BLOC 6 : CALCULS PORTEFEUILLE ★ v3.2 — GAIN RÉEL PATRIMONIAL
 # =============================================================================
 
-def compute_portfolio(positions_conf: list, capital_investi: float,
-                      bonus_fortuneo: float, live_prices: dict) -> dict:
-    """★ v3.1 — Prix et variation du jour via live_prices (fast_info), plus aucun délai."""
+def compute_portfolio(positions_conf: list, capital_reel: float,
+                      ajustement_pat: float, bonus_fortuneo: float,
+                      live_prices: dict) -> dict:
+    """
+    ★ v3.2 — Formule patrimoniale corrigée :
+      Valeur_Titres_Actuelle     = Σ(Quantité × Prix_Direct)          [= valeur_totale]
+      Solde_Total_Portefeuille   = Valeur_Titres_Actuelle + AJUSTEMENT_PATRIMONIAL
+      Gain_Total_Reel            = Solde_Total_Portefeuille - CAPITAL_REEL_SORTI_BANQUE
+      Perf_%                     = Gain_Total_Reel / CAPITAL_REEL_SORTI_BANQUE × 100
+
+    L'ajustement patrimonial absorbe :
+      • 160,00 € Bonus Fortuneo (argent offert, non sorti de la poche)
+      • 59,97 €  Plus-values réalisées & réinvesties (TBC)
+    """
     positions_calculees = []
     valeur_totale = 0.0
     valeur_veille = 0.0
     val_env  = {"PEA": 0.0, "AV": 0.0}
-    gain_env = {"PEA": 0.0, "AV": 0.0}
+    gain_env = {"PEA": 0.0, "AV": 0.0}   # gains ligne à ligne (pour fiscalité)
 
     for pos in positions_conf:
         prix, prev, tk_used = get_price_info(live_prices, pos["tickers"])
@@ -434,7 +409,6 @@ def compute_portfolio(positions_conf: list, capital_investi: float,
         perf_pct   = gain_unit / pos["prm"] * 100
         gain_total = gain_unit * pos["parts"]
 
-        # ★ prev = previous_close issu de fast_info → vraie variation du jour
         var_jour_pct = (prix - prev) / prev * 100 if prev and prev != 0 else 0.0
         var_jour_eur = (prix - prev) * pos["parts"] if prev else 0.0
 
@@ -449,31 +423,40 @@ def compute_portfolio(positions_conf: list, capital_investi: float,
         gain_env[env]   += gain_total
         valeur_veille   += pos["parts"] * (prev if prev else prix)
 
-    capital_net  = capital_investi - bonus_fortuneo
-    gain_net     = valeur_totale - capital_net
-    perf_tot_pct = gain_net / capital_net * 100 if capital_net else 0.0
-    perf_j_eur   = valeur_totale - valeur_veille
-    perf_j_pct   = perf_j_eur / valeur_veille * 100 if valeur_veille else 0.0
+    # ── ★ v3.2 : Calcul patrimonial réel ──────────────────────────────────────
+    # Étape 1 — Solde total = titres + ajustements hors-marché
+    solde_total = valeur_totale + ajustement_pat
+
+    # Étape 2 — Gain réel = ce que vaut le patrimoine vs ce qui est sorti du compte
+    gain_reel   = solde_total - capital_reel
+
+    # Étape 3 — Performance % sur le capital réellement engagé
+    perf_tot_pct = (gain_reel / capital_reel * 100) if capital_reel else 0.0
+    # ─────────────────────────────────────────────────────────────────────────
+
+    perf_j_eur = valeur_totale - valeur_veille
+    perf_j_pct = perf_j_eur / valeur_veille * 100 if valeur_veille else 0.0
 
     return {
-        "positions": positions_calculees,
-        "valeur_totale": valeur_totale,
-        "valeur_veille": valeur_veille,
-        "val_env":  val_env,
-        "gain_env": gain_env,
-        "capital_net":  capital_net,
-        "gain_net":     gain_net,
-        "perf_tot_pct": perf_tot_pct,
-        "perf_j_eur":   perf_j_eur,
-        "perf_j_pct":   perf_j_pct,
+        "positions":      positions_calculees,
+        "valeur_totale":  valeur_totale,       # Valeur titres seule (sans ajustement)
+        "solde_total":    solde_total,          # ★ Solde affiché = titres + ajustement
+        "gain_reel":      gain_reel,            # ★ Gain patrimonial réel
+        "perf_tot_pct":   perf_tot_pct,         # ★ Perf % sur capital réel
+        "valeur_veille":  valeur_veille,
+        "val_env":        val_env,
+        "gain_env":       gain_env,
+        "ajustement_pat": ajustement_pat,
+        "capital_reel":   capital_reel,
+        "perf_j_eur":     perf_j_eur,
+        "perf_j_pct":     perf_j_pct,
     }
 
 
 def compute_benchmark(data: dict, live_prices: dict, positions_conf: list,
                       perf_tot_pct: float) -> tuple:
     """
-    ★ v3.1 — Prix actuel et variation via live_prices.
-              Série historique (pour calcul de perf depuis DATE_DEBUT) via data.
+    ★ v3.2 — Le gap utilise le perf_tot_pct patrimonial (gain_reel / capital_reel).
     """
     bench_pos = next((p for p in positions_conf if p["nom"] == BENCHMARK_NOM), None)
     if not bench_pos:
@@ -483,7 +466,6 @@ def compute_benchmark(data: dict, live_prices: dict, positions_conf: list,
     if not prix:
         return None, None, None, None
 
-    # Cherche le ticker historique correspondant (peut différer du ticker live)
     hist_tk = tk
     df_hist = data.get(hist_tk, pd.DataFrame())
     if df_hist.empty:
@@ -505,6 +487,7 @@ def compute_benchmark(data: dict, live_prices: dict, positions_conf: list,
         start_val = float(candidates.iloc[-1]) if not candidates.empty else float(close.iloc[0])
 
     perf_bench   = (prix / start_val - 1) * 100 if start_val else None
+    # ★ v3.2 — gap = performance patrimoniale réelle − performance benchmark
     gap          = perf_tot_pct - perf_bench if perf_bench is not None else None
     perf_bench_j = (prix - prev) / prev * 100 if prev and prev != 0 else None
     return perf_bench, gap, prix, perf_bench_j
@@ -556,7 +539,7 @@ def evaluate_hydrogen(anrj) -> tuple:
         return "🔶 SOUS SMA20 — Surveillance active", "orange"
     if anrj["sma50"] and p > anrj["sma50"]:
         return "✅ MAINTIEN — Au-dessus SMA50", "green"
-    return "ℹ️ SURVEILLANCE NEUTRE", "orange"
+    return "i️ SURVEILLANCE NEUTRE", "orange"
 
 
 def evaluate_em_asia(aasi) -> tuple:
@@ -571,7 +554,7 @@ def evaluate_em_asia(aasi) -> tuple:
         return "🔶 SOUS SMA20 — Surveillance active", "orange"
     if aasi["sma50"] and p > aasi["sma50"]:
         return "✅ MAINTIEN — Au-dessus SMA50", "green"
-    return "ℹ️ SURVEILLANCE NEUTRE", "orange"
+    return "i️ SURVEILLANCE NEUTRE", "orange"
 
 
 def evaluate_sentinelles(data: dict, live_prices: dict) -> tuple:
@@ -638,51 +621,58 @@ def compute_arbitrage(positions_calculees: list, valeur_totale: float, anrj, aas
     anrj_val = next((p["valeur"] for p in positions_calculees if p["nom"] == "Global Hydrogen"), 0)
     aasi_val = next((p["valeur"] for p in positions_calculees if p["nom"] == "EM Asia"), 0)
     poids_sat = (anrj_val + aasi_val) / valeur_totale * 100
-
     if anrj and anrj["sma20"] and anrj["prix"] < anrj["sma20"] and anrj_val > 0:
         actions.append(f"🚨 Vendre **{anrj_val * 0.25:,.2f}€** d'ANRJ → renforcer MSCI World AV")
     if aasi and aasi["sma20"] and aasi["prix"] < aasi["sma20"] and aasi_val > 0:
         actions.append(f"🚨 Vendre **{aasi_val * 0.25:,.2f}€** d'AASI → renforcer MSCI World AV")
     if poids_sat > 45:
         excedent = (poids_sat - 45) / 100 * valeur_totale
-        actions.append(f"ℹ️ Rééquilibrage : réduire satellites de **{excedent:,.2f}€** (poids actuel {poids_sat:.1f}%)")
+        actions.append(f"i️ Rééquilibrage : réduire satellites de **{excedent:,.2f}€** (poids actuel {poids_sat:.1f}%)")
     return actions
 
 # =============================================================================
 # ██████╗  BLOC 9 : CHARGEMENT DES DONNÉES
 # =============================================================================
 
-# ── 1. Prix live (fast_info) — TTL 30s ──────────────────────────────────────
-with st.spinner("📡 Récupération des prix en direct…"):
+with st.spinner("📡 Récupération des prix en direct..."):
     LIVE = load_all_live_prices()
 
-# ── 2. Historique technique (yf.download) — TTL 90s ─────────────────────────
-with st.spinner("📊 Chargement de l'historique technique…"):
+with st.spinner("📊 Chargement de l'historique technique..."):
     DATA = load_all_data()
 
 if not LIVE:
     st.error("❌ Aucun prix live récupéré. Vérifiez votre connexion internet.")
     st.stop()
 
-# ── Calcul portefeuille (prix live) ─────────────────────────────────────────
-ptf                 = compute_portfolio(positions_conf, capital_investi, bonus_fortuneo, LIVE)
+# ── ★ v3.2 : compute_portfolio reçoit capital_reel et ajustement_pat ─────────
+ptf = compute_portfolio(
+    positions_conf,
+    capital_reel,
+    ajustement_pat,
+    bonus_fortuneo,
+    LIVE
+)
+
+# ── Extraction des variables du portefeuille ──────────────────────────────────
 positions_calculees = ptf["positions"]
-valeur_totale       = ptf["valeur_totale"]
+valeur_totale       = ptf["valeur_totale"]   # Valeur brute des titres
+solde_total         = ptf["solde_total"]     # ★ Titres + ajustement patrimonial
+gain_reel           = ptf["gain_reel"]       # ★ Gain patrimonial réel
 val_env             = ptf["val_env"]
 gain_env            = ptf["gain_env"]
 
-# ── Benchmark (prix live + série historique) ─────────────────────────────────
+# ── Benchmark (gap calculé sur perf_tot_pct patrimoniale) ────────────────────
 perf_bench, gap, bench_prix, perf_bench_j = compute_benchmark(
     DATA, LIVE, positions_conf, ptf["perf_tot_pct"]
 )
 
-# ── Analyses techniques (historique + prix live pour cohérence) ──────────────
+# ── Analyses techniques ───────────────────────────────────────────────────────
 anrj_info  = analyze_ticker(DATA, LIVE, "ANRJ.PA")
 aasi_info  = analyze_ticker(DATA, LIVE, "AASI.PA")
 proxies_a  = {tk: analyze_ticker(DATA, LIVE, tk) for tk in PROXIES_ANRJ}
 proxies_em = {tk: analyze_ticker(DATA, LIVE, tk) for tk in PROXIES_AASI}
 
-# ── Décisions ────────────────────────────────────────────────────────────────
+# ── Décisions ─────────────────────────────────────────────────────────────────
 h_msg, h_col = evaluate_hydrogen(anrj_info)
 a_msg, a_col = evaluate_em_asia(aasi_info)
 s_msg, s_col, sent_rows = evaluate_sentinelles(DATA, LIVE)
@@ -690,7 +680,7 @@ decision_globale, decision_color = decision_finale(h_col, a_col, s_col, h_msg, a
 phase_text, phase_color = determine_phase(gap, anrj_info, aasi_info, proxies_a, proxies_em)
 arbitrage_actions = compute_arbitrage(positions_calculees, valeur_totale, anrj_info, aasi_info)
 
-# ── Flash Macro — ★ v3.1 : données live uniquement ───────────────────────────
+# ── Flash Macro ───────────────────────────────────────────────────────────────
 macro_info = {}
 for sym in MACRO_TICKERS:
     lp = LIVE.get(sym, {})
@@ -699,16 +689,14 @@ for sym in MACRO_TICKERS:
     macro_info[sym] = {"prix": prix, "prev": prev} if prix else None
 
 now = datetime.now(ZoneInfo("Europe/Paris"))
-
-# Compte le nombre de tickers live disponibles (pour info utilisateur)
-live_ok = sum(1 for v in LIVE.values() if v.get("prix"))
+live_ok    = sum(1 for v in LIVE.values() if v.get("prix"))
 live_total = len(LIVE)
 
 # =============================================================================
 # ██████╗  BLOC 10 : HEADER
 # =============================================================================
 
-st.title("🛰️ Cockpit Décisionnel v3.1")
+st.title("🛰️ Cockpit Décisionnel v3.2")
 col_hd1, col_hd2 = st.columns([3, 1])
 with col_hd1:
     st.caption(
@@ -732,20 +720,29 @@ st.markdown(
 )
 
 # =============================================================================
-# ██████╗  BLOC 11 : SECTION 1 — COMMAND CENTER
+# ██████╗  BLOC 11 : SECTION 1 — COMMAND CENTER ★ v3.2
 # =============================================================================
 
 st.markdown("## 🚀 Command Center")
 
+
 def sign_str(v):
     return "+" if v >= 0 else ""
 
+
 c1, c2, c3, c4 = st.columns(4)
 
+# ── KPI 1 : Solde Total Portefeuille (titres + ajustement) ───────────────────
 with c1:
     st.markdown('<div class="card card-accent">', unsafe_allow_html=True)
-    st.markdown('<div class="kpi-label">Valeur Totale <span class="live-badge">LIVE</span></div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="kpi-value">{valeur_totale:,.2f}€</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="kpi-label">Solde Total Portefeuille'
+        '<span class="live-badge">LIVE</span>'
+        '<span class="adj-badge">+ADJ</span></div>',
+        unsafe_allow_html=True
+    )
+    st.markdown(f'<div class="kpi-value">{solde_total:,.2f}€</div>', unsafe_allow_html=True)
+    # Variation du jour calculée sur les titres seulement (l'ajustement est fixe)
     clr = "pos" if ptf["perf_j_eur"] >= 0 else "neg"
     st.markdown(
         f'<div class="kpi-delta-{clr}">'
@@ -753,17 +750,33 @@ with c1:
         f'({sign_str(ptf["perf_j_pct"])}{ptf["perf_j_pct"]:.2f}%) vs clôture veille</div>',
         unsafe_allow_html=True
     )
+    # Détail de décomposition
+    st.markdown(
+        f'<div class="small" style="margin-top:0.4rem;">'
+        f'Titres : {valeur_totale:,.2f}€ · Ajust. : +{ptf["ajustement_pat"]:,.2f}€</div>',
+        unsafe_allow_html=True
+    )
     st.markdown('</div>', unsafe_allow_html=True)
 
+# ── KPI 2 : Gain Réel Patrimonial ────────────────────────────────────────────
 with c2:
     st.markdown('<div class="card card-accent">', unsafe_allow_html=True)
-    st.markdown('<div class="kpi-label">Gain Net</div>', unsafe_allow_html=True)
-    gn = ptf["gain_net"]
-    g_clr = "#22C55E" if gn >= 0 else "#EF4444"
-    st.markdown(f'<div class="kpi-value" style="color:{g_clr};">{sign_str(gn)}{gn:,.2f}€</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="small">Capital net : {ptf["capital_net"]:,.2f}€</div>', unsafe_allow_html=True)
+    st.markdown('<div class="kpi-label">Gain Réel Patrimonial</div>', unsafe_allow_html=True)
+    g_clr = "#22C55E" if gain_reel >= 0 else "#EF4444"
+    st.markdown(
+        f'<div class="kpi-value" style="color:{g_clr};">{sign_str(gain_reel)}{gain_reel:,.2f}€</div>',
+        unsafe_allow_html=True
+    )
+    st.markdown(
+        f'<div class="small">'
+        f'Capital réel sorti : {ptf["capital_reel"]:,.2f}€<br>'
+        f'<span style="color:#6366F1;font-size:0.75rem;">'
+        f'Bonus {160:.0f}€ + TBC {59.97:.2f}€ inclus</span></div>',
+        unsafe_allow_html=True
+    )
     st.markdown('</div>', unsafe_allow_html=True)
 
+# ── KPI 3 : Performance Totale (sur capital réel) ────────────────────────────
 with c3:
     st.markdown('<div class="card card-accent">', unsafe_allow_html=True)
     st.markdown('<div class="kpi-label">Performance Totale</div>', unsafe_allow_html=True)
@@ -779,20 +792,30 @@ with c3:
         )
     st.markdown('</div>', unsafe_allow_html=True)
 
+# ── KPI 4 : Benchmark MSCI World ─────────────────────────────────────────────
 with c4:
     st.markdown('<div class="card card-accent">', unsafe_allow_html=True)
-    st.markdown('<div class="kpi-label">Benchmark MSCI World <span class="live-badge">LIVE</span></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="kpi-label">Benchmark MSCI World <span class="live-badge">LIVE</span></div>',
+        unsafe_allow_html=True
+    )
     if perf_bench is not None:
         pb_clr = "#22C55E" if perf_bench >= 0 else "#EF4444"
-        st.markdown(f'<div class="kpi-value" style="color:{pb_clr};">{sign_str(perf_bench)}{perf_bench:.2f}%</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="kpi-value" style="color:{pb_clr};">{sign_str(perf_bench)}{perf_bench:.2f}%</div>',
+            unsafe_allow_html=True
+        )
         if perf_bench_j is not None:
             pj_clr = "pos" if perf_bench_j >= 0 else "neg"
-            st.markdown(f'<div class="kpi-delta-{pj_clr}">{sign_str(perf_bench_j)}{perf_bench_j:.2f}% vs clôture veille</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="kpi-delta-{pj_clr}">{sign_str(perf_bench_j)}{perf_bench_j:.2f}% vs clôture veille</div>',
+                unsafe_allow_html=True
+            )
     else:
         st.markdown('<div class="kpi-value">N/A</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# Tableau positions + donut
+# ── Tableau positions + donut ─────────────────────────────────────────────────
 st.markdown("### 📊 Positions détaillées")
 col_tab, col_pie = st.columns([3, 2])
 
@@ -813,6 +836,15 @@ with col_tab:
             "Var. Jour (€)":vje_f,
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # ★ v3.2 — Ligne récapitulative d'ajustement patrimonial
+    st.markdown(
+        f'<div class="info-box" style="margin-top:0.5rem;">'
+        f'<b>Ajustement patrimonial :</b> +{ptf["ajustement_pat"]:,.2f}€ '
+        f'(Bonus Fortuneo 160,00€ + TBC 59,97€) → '
+        f'Solde total = <b>{solde_total:,.2f}€</b></div>',
+        unsafe_allow_html=True
+    )
 
 with col_pie:
     donut_data = [p for p in positions_calculees if p["valeur"] > 0]
@@ -840,6 +872,7 @@ st.markdown("## 📈 Stratégie & Arbitrage")
 
 v_class = {"red": "verdict-red", "orange": "verdict-orange", "green": "verdict-green"}.get(decision_color, "verdict-green")
 st.markdown(f'<div class="{v_class}">{decision_globale}</div>', unsafe_allow_html=True)
+
 
 def render_satellite(title, info, msg, col, proxies):
     card_border = {"red":"card-red","orange":"card-orange","green":"card-green","gray":"card"}.get(col,"card")
@@ -873,13 +906,13 @@ def render_satellite(title, info, msg, col, proxies):
             st.markdown(f"⚪ **{tk}** — N/A")
     st.markdown('</div>', unsafe_allow_html=True)
 
+
 col_h, col_a = st.columns(2)
 with col_h:
     render_satellite("🔬 Hydrogène · ANRJ", anrj_info, h_msg, h_col, proxies_a)
 with col_a:
     render_satellite("🌏 EM Asia · AASI",    aasi_info, a_msg, a_col, proxies_em)
 
-# Poids + arbitrages
 st.markdown('<div class="card">', unsafe_allow_html=True)
 anrj_val  = next((p["valeur"] for p in positions_calculees if p["nom"] == "Global Hydrogen"), 0)
 aasi_val  = next((p["valeur"] for p in positions_calculees if p["nom"] == "EM Asia"), 0)
@@ -908,7 +941,6 @@ with col_act:
     else:
         st.success("✅ Aucun arbitrage requis — Maintien en l'état")
 
-# Cible patrimoniale
 st.markdown("---")
 st.markdown("#### 🎯 Progression vers la Cible 94% World / 6% Or")
 val_world = sum(p["valeur"] for p in positions_calculees if "MSCI World" in p["nom"])
@@ -1027,8 +1059,10 @@ st.markdown("---")
 col_f1, col_f2 = st.columns([4, 1])
 with col_f1:
     st.caption(
-        "🛰️ Cockpit Décisionnel v3.1 · Prix live via yf.fast_info (30s) · "
-        "Indicateurs techniques via yf.download (90s) · Outil personnel — Ne constitue pas un conseil en investissement"
+        "🛰️ Cockpit Décisionnel v3.2 · Prix live via yf.fast_info (30s) · "
+        "Indicateurs techniques via yf.download (90s) · "
+        f"Ajust. patrimonial {ajustement_pat:,.2f}€ · Capital réel {capital_reel:,.2f}€ · "
+        "Outil personnel — Ne constitue pas un conseil en investissement"
     )
 with col_f2:
     if st.button("🔄 Rafraîchir"):
