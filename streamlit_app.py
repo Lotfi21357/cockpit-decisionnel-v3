@@ -1,13 +1,12 @@
 # =============================================================================
-# COCKPIT DÉCISIONNEL BOURSIER v4.0 — "INSTITUTIONAL GRADE"
+# COCKPIT DÉCISIONNEL BOURSIER v4.1 — "ULTRA-FOCUS"
 # Lead Dev: Claude (Anthropic)
-# v3.4 → v4.0 :
-#   • Thème anthracite institutionnel (or #D4AF37, bleu #007BFF, rouge #FF3131)
-#   • Strategic Score Engine 6 couches (-5 → +5) par satellite
-#   • Calculateur d'Arbitrage Chirurgical (Target Weight Matrix)
-#   • Alertes Leadership/Gap persistant 14j
-#   • Executive UI : Radar Chart Plotly + Carte de Décision en euros
-#   • Graphique de performance relative (Actif / MSCI World)
+# v4.0 → v4.1 :
+#   • Moteur de Score Unifié 3 couches : Momentum / Structure / Leadership
+#     (RSI-based, SMA20-based, RS-slope — plage -4 → +4)
+#   • Graphique Alpha Bars  : écart quotidien actif vs MSCI World (15j, go.Bar)
+#   • UI Linear Scoreboard  : remplace Radar Chart — tableau badge HTML 3 col.
+#   • Expander Méthodologie du Score (début du dashboard)
 # =============================================================================
 
 import streamlit as st
@@ -27,7 +26,7 @@ warnings.filterwarnings("ignore")
 # =============================================================================
 
 st.set_page_config(
-    page_title="Cockpit Décisionnel v4.0 · Institutional",
+    page_title="Cockpit Décisionnel v4.1 · Ultra-Focus",
     page_icon="🛰️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -37,7 +36,7 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600;700&display=swap');
 
-/* ── Base Anthracite (pas noir pur) ── */
+/* ── Base Anthracite ── */
 .stApp { background-color: #1C1F26; font-family: 'DM Sans', sans-serif; }
 section[data-testid="stSidebar"] {
     background-color: #22252E;
@@ -131,16 +130,49 @@ section[data-testid="stSidebar"] {
     color: #FCA5A5; font-weight: 600;
 }
 
-/* ── Score Layer Row ── */
-.layer-row {
-    display:flex; align-items:center; gap:.8rem;
-    padding:.5rem .7rem; border-radius:6px; margin:.2rem 0;
-    background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.04);
+/* ── Score Layer Row (scoreboard linéaire v4.1) ── */
+.score-table {
+    width:100%; border-collapse:collapse; margin-top:.6rem;
 }
-.layer-name { font-size:.8rem; color:#8892AA; width:110px; flex-shrink:0; }
-.layer-bar-wrap { flex:1; background:#1C1F26; border-radius:4px; height:8px; }
-.layer-val { font-family:'Space Mono',monospace; font-size:.85rem; width:50px;
-             text-align:right; flex-shrink:0; }
+.score-table th {
+    padding:.35rem .7rem; color:#6B7585; font-size:.72rem;
+    text-transform:uppercase; letter-spacing:1.5px;
+    text-align:left; border-bottom:1px solid #2E3340;
+    font-family:'DM Sans',sans-serif;
+}
+.score-table td {
+    padding:.5rem .7rem; font-size:.84rem;
+    border-bottom:1px solid rgba(46,51,64,0.6);
+    vertical-align:middle;
+}
+.score-table td.col-name  { color:#8892AA; font-size:.8rem; }
+.score-table td.col-badge { text-align:center; }
+.score-table td.col-val   {
+    font-family:'Space Mono',monospace; font-size:.8rem; color:#CBD5E1;
+}
+
+/* ── Signal Badges v4.1 ── */
+.badge {
+    display:inline-block; padding:.2rem .8rem; border-radius:20px;
+    font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.5px;
+}
+/* Anciens badges (rétrocompat) */
+.badge-red    { background:#FF3131; color:white; }
+.badge-orange { background:#F97316; color:white; }
+.badge-green  { background:#22C55E; color:#0B0E15; }
+.badge-gold   { background:#D4AF37; color:#0B0E15; }
+.badge-gray   { background:#374151; color:#D1D5DB; }
+.badge-blue   { background:#007BFF; color:white; }
+/* Nouveaux badges score v4.1 */
+.bg-bull  { background:#22C55E; color:#0B0E15;
+            padding:.2rem .7rem; border-radius:20px;
+            font-size:.7rem; font-weight:700; letter-spacing:.5px; }
+.bg-neut  { background:#F97316; color:white;
+            padding:.2rem .7rem; border-radius:20px;
+            font-size:.7rem; font-weight:700; letter-spacing:.5px; }
+.bg-bear  { background:#FF3131; color:white;
+            padding:.2rem .7rem; border-radius:20px;
+            font-size:.7rem; font-weight:700; letter-spacing:.5px; }
 
 /* ── Phase Banner ── */
 .phase-banner {
@@ -171,14 +203,6 @@ h3, h4 { color:#CBD5E1 !important; font-family:'DM Sans',sans-serif; font-weight
 .live-badge { display:inline-block; background:#22C55E; color:#0B0E15; border-radius:4px;
               font-size:.62rem; font-weight:800; padding:.1rem .4rem;
               letter-spacing:.5px; vertical-align:middle; margin-left:.4rem; }
-.badge { display:inline-block; padding:.2rem .8rem; border-radius:20px;
-         font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
-.badge-red    { background:#FF3131; color:white; }
-.badge-orange { background:#F97316; color:white; }
-.badge-green  { background:#22C55E; color:#0B0E15; }
-.badge-gold   { background:#D4AF37; color:#0B0E15; }
-.badge-gray   { background:#374151; color:#D1D5DB; }
-.badge-blue   { background:#007BFF; color:white; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -199,7 +223,6 @@ _DEFAULT_AJUSTEMENT_PAT = 219.97
 _DEFAULT_BONUS_FORTUNEO = 160.0
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_perso.json")
 
-# Targets institutionnels initiaux par satellite (% du portefeuille total)
 INITIAL_TARGETS = {
     "Global Hydrogen": 0.25,
     "EM Asia":         0.25,
@@ -269,7 +292,7 @@ if "config_loaded" not in st.session_state:
 # ██  BLOC 3 : SIDEBAR
 # =============================================================================
 
-st.sidebar.markdown("## ⚙️ Paramètres v4.0")
+st.sidebar.markdown("## ⚙️ Paramètres v4.1")
 mode_direct = st.sidebar.toggle("🔌 Mode Direct (Vue Brute)", value=False,
     help="Désactive tous les ajustements — valeur marchande pure.")
 st.sidebar.markdown("---")
@@ -385,7 +408,7 @@ def load_all_live_prices() -> dict:
 
 @st.cache_data(ttl=90, show_spinner=False)
 def load_all_data() -> dict:
-    start = (datetime.now() - timedelta(days=600)).strftime("%Y-%m-%d")  # 600j pour SMA200
+    start = (datetime.now() - timedelta(days=600)).strftime("%Y-%m-%d")
     all_tickers = []
     for pos in POSITIONS_BASE:
         all_tickers.extend(pos["tickers"])
@@ -477,7 +500,6 @@ def adx_indicator(df: pd.DataFrame, period: int = 14):
 
 
 def volume_signal(df: pd.DataFrame) -> int:
-    """+1 volumes acheteurs, -1 volumes vendeurs, 0 neutre"""
     if df.empty or "Volume" not in df.columns or "Close" not in df.columns:
         return 0
     vol   = df["Volume"].dropna()
@@ -523,9 +545,9 @@ def relative_strength_slope(data: dict, ticker: str, days: int = 14):
 
 
 def analyze_ticker(data: dict, live_prices: dict, ticker: str):
-    lp   = live_prices.get(ticker, {})
+    lp        = live_prices.get(ticker, {})
     prix_live = lp.get("prix")
-    df   = data.get(ticker, pd.DataFrame())
+    df        = data.get(ticker, pd.DataFrame())
     if df.empty or "Close" not in df.columns:
         if prix_live:
             return {"ticker": ticker, "prix": prix_live,
@@ -548,180 +570,93 @@ def analyze_ticker(data: dict, live_prices: dict, ticker: str):
     }
 
 # =============================================================================
-# ██  BLOC 6 : STRATEGIC SCORE ENGINE — 6 COUCHES
+# ██  BLOC 6 : MOTEUR DE SCORE UNIFIÉ v4.1 — 3 COUCHES
+#    Plage : -4 → +4
+#    • Momentum  (RSI)           : +1 sain / -1 tendu ou faible
+#    • Structure (SMA20)         : +1 solide / -1 fragile
+#    • Leadership (RS slope 14j) : +2 leader / -2 lagger
 # =============================================================================
 
-def rsi_to_radar(rsi) -> float:
-    """Convertit RSI en score radar 0-10 (optimal = 50-65)"""
-    if rsi is None:
-        return 5.0
-    if rsi < 30:
-        return 2.0
-    if rsi < 40:
-        return 4.0
-    if rsi <= 65:
-        return 8.0 + (rsi - 50) / 15 * 1.5 if rsi >= 50 else 6.0
-    if rsi <= 75:
-        return max(3.0, 8.0 - (rsi - 65) * 0.4)
-    return 2.0
-
-
-def adx_to_radar(adx) -> float:
-    """Convertit ADX en score radar 0-10"""
-    if adx is None:
-        return 4.0
-    if adx < 15:
-        return 2.0
-    if adx < 25:
-        return 5.0
-    if adx < 35:
-        return 8.0
-    return 9.5
-
-
-def get_institutional_score(
-    ticker: str, theme: str,
-    data: dict, live_prices: dict, macro_info: dict
-) -> dict:
+def compute_unified_score(ticker: str, data: dict, live_prices: dict) -> dict:
     """
-    Analyse 6 couches institutionnelles. Retourne score -5 → +5 et détails radar.
-    theme: 'hydrogen' | 'em_asia'
+    Score unifié 3 couches. Aucune valeur par défaut grise ou nulle.
+    Retourne dict : total, details (list of dicts), rsi_raw, adx_raw.
     """
-    info   = analyze_ticker(data, live_prices, ticker)
-    df     = data.get(ticker, pd.DataFrame())
+    info    = analyze_ticker(data, live_prices, ticker)
     details = []
     score   = 0
 
-    # ── COUCHE 1 : Tendance (max ±2) ─────────────────────────────────────────
-    trend_score = 0
-    if info:
-        p = info["prix"]
-        if info["sma50"] is not None:
-            if p < info["sma50"]:
-                trend_score = -2
-                details.append(("Tendance", -2, "Prix < SMA50 — Tendance baissière confirmée"))
-            else:
-                trend_score += 1
-                details.append(("Tendance", +1, "Prix > SMA50 ✓"))
-                if info["sma200"] is not None:
-                    if p > info["sma200"]:
-                        trend_score += 1
-                        details.append(("Tendance", +1, "Prix > SMA200 — Structure haussière LT ✓"))
-                    else:
-                        details.append(("Tendance", 0, "Prix < SMA200 — Sous résistance LT"))
-        else:
-            details.append(("Tendance", 0, "SMA50 indisponible"))
+    # ── COUCHE 1 : Momentum (RSI) ─────────────────────────────────────────────
+    rsi_val = info["rsi"] if info else None
+    if rsi_val is not None:
+        if rsi_val >= 70:
+            mom_score = -1
+            mom_badge = "bear"
+            mom_desc  = f"RSI = {rsi_val:.1f} — Tendu (suracheté)"
+        elif rsi_val <= 45:
+            mom_score = -1
+            mom_badge = "bear"
+            mom_desc  = f"RSI = {rsi_val:.1f} — Faible (survendu)"
+        else:                          # 45 < RSI < 70
+            mom_score = 1
+            mom_badge = "bull"
+            mom_desc  = f"RSI = {rsi_val:.1f} — Sain"
     else:
-        details.append(("Tendance", 0, "Données indisponibles"))
+        mom_score = 0
+        mom_badge = "neut"
+        mom_desc  = "RSI indisponible"
 
-    score += trend_score
+    details.append({"name": "Momentum",   "score": mom_score, "badge": mom_badge, "desc": mom_desc})
+    score += mom_score
 
-    # ── COUCHE 2 : Macro (max ±1) ────────────────────────────────────────────
-    macro_score = 0
-    if theme == "hydrogen":
-        tnx   = (macro_info.get("^TNX") or {}).get("prix")
-        nq_df = data.get("NQ=F", pd.DataFrame())
-        nq_lp = (live_prices.get("NQ=F") or {}).get("prix")
-        if tnx is not None:
-            if float(tnx) > 4.50:
-                macro_score -= 1
-                details.append(("Macro", -1, f"US 10Y = {tnx:.2f}% > 4.50% — Défavorable aux taux longs"))
-            else:
-                details.append(("Macro", 0, f"US 10Y = {tnx:.2f}% ≤ 4.50% — OK"))
-        if not nq_df.empty and "Close" in nq_df.columns:
-            nq_sma50 = sma(nq_df["Close"].dropna(), 50)
-            nq_price = nq_lp if nq_lp else float(nq_df["Close"].dropna().iloc[-1])
-            if nq_sma50 and nq_price > nq_sma50:
-                macro_score += 1
-                details.append(("Macro", +1, "Nasdaq > SMA50 — Appétit risque haussier ✓"))
-            elif nq_sma50:
-                details.append(("Macro", 0, "Nasdaq < SMA50 — Appétit risque neutre"))
+    # ── COUCHE 2 : Structure (Prix vs SMA20) ──────────────────────────────────
+    if info and info["sma20"] is not None:
+        if info["prix"] > info["sma20"]:
+            struct_score = 1
+            struct_badge = "bull"
+            struct_desc  = f"Prix {info['prix']:.2f} > SMA20 {info['sma20']:.2f} — Solide"
+        else:
+            struct_score = -1
+            struct_badge = "bear"
+            struct_desc  = f"Prix {info['prix']:.2f} < SMA20 {info['sma20']:.2f} — Fragile"
+    else:
+        struct_score = 0
+        struct_badge = "neut"
+        struct_desc  = "SMA20 indisponible"
 
-    elif theme == "em_asia":
-        dxy_lp = (live_prices.get("DX-Y.NYB") or {}).get("prix")
-        dxy_df = data.get("DX-Y.NYB", pd.DataFrame())
-        mchi_df = data.get("MCHI", pd.DataFrame())
-        mchi_lp = (live_prices.get("MCHI") or {}).get("prix")
-        if dxy_lp is not None:
-            if float(dxy_lp) > 105:
-                macro_score -= 1
-                details.append(("Macro", -1, f"DXY = {dxy_lp:.1f} > 105 — Dollar fort, pression EM"))
-            else:
-                details.append(("Macro", 0, f"DXY = {dxy_lp:.1f} ≤ 105 — OK"))
-        if not mchi_df.empty and "Close" in mchi_df.columns:
-            mchi_sma50 = sma(mchi_df["Close"].dropna(), 50)
-            mchi_px    = mchi_lp if mchi_lp else float(mchi_df["Close"].dropna().iloc[-1])
-            if mchi_sma50 and mchi_px > mchi_sma50:
-                macro_score += 1
-                details.append(("Macro", +1, "MCHI (Chine) > SMA50 — Flux EM Asia positifs ✓"))
-            elif mchi_sma50:
-                details.append(("Macro", 0, "MCHI (Chine) < SMA50 — Flux neutres"))
+    details.append({"name": "Structure",  "score": struct_score, "badge": struct_badge, "desc": struct_desc})
+    score += struct_score
 
-    macro_score = max(-1, min(1, macro_score))
-    score += macro_score
-
-    # ── COUCHE 3 : Leadership — Force Relative (max ±2) ──────────────────────
-    leader_score = 0
+    # ── COUCHE 3 : Leadership (pente Force Relative 14j) ─────────────────────
     rs_slope = relative_strength_slope(data, ticker, days=14)
     if rs_slope is not None:
-        if rs_slope < 0:
-            leader_score = -2
-            details.append(("Leadership", -2, f"Pente FR négative ({rs_slope:.5f}) — Sous-performance vs World"))
-        elif rs_slope > 0:
+        if rs_slope > 0:
             leader_score = 2
-            details.append(("Leadership", +2, f"Pente FR positive ({rs_slope:.5f}) — Leadership vs World ✓"))
+            leader_badge = "bull"
+            leader_desc  = f"Pente FR = +{rs_slope:.5f} — Leader vs World ✓"
         else:
-            details.append(("Leadership", 0, "Force relative neutre"))
+            leader_score = -2
+            leader_badge = "bear"
+            leader_desc  = f"Pente FR = {rs_slope:.5f} — Lagger vs World"
     else:
-        details.append(("Leadership", 0, "Données FR insuffisantes"))
+        leader_score = 0
+        leader_badge = "neut"
+        leader_desc  = "Données FR insuffisantes"
+
+    details.append({"name": "Leadership", "score": leader_score, "badge": leader_badge, "desc": leader_desc})
     score += leader_score
 
-    # ── COUCHE 4 : Flux / Volumes (bonus/malus ±1) ───────────────────────────
-    vol_score = volume_signal(df) if not df.empty else 0
-    if vol_score == 1:
-        details.append(("Volumes", +1, "Volumes acheteurs croissants ✓"))
-    elif vol_score == -1:
-        details.append(("Volumes", -1, "Volumes vendeurs massifs — Pression baissière"))
-    else:
-        details.append(("Volumes", 0, "Volumes neutres"))
-    score += vol_score
-
-    # ── Score total capped ────────────────────────────────────────────────────
-    score = max(-5, min(5, score))
-
-    # ── Couches 5-6 : Momentum & Structure (radar only) ──────────────────────
-    rsi_val = info["rsi"] if info else None
-    adx_val = info["adx"] if info else None
-    rsi_radar_val = rsi_to_radar(rsi_val)
-    adx_radar_val = adx_to_radar(adx_val)
-
-    if rsi_val:
-        details.append(("Momentum", None, f"RSI = {rsi_val:.1f}"))
-    if adx_val:
-        details.append(("Structure", None, f"ADX = {adx_val:.1f}"))
-
-    # ── Normalisation pour radar 0-10 ────────────────────────────────────────
-    radar = {
-        "Tendance":   (trend_score  + 2) * 2.5,   # -2/+2 → 0/10
-        "Macro":      (macro_score  + 1) * 5.0,   # -1/+1 → 0/10
-        "Leadership": (leader_score + 2) * 2.5,   # -2/+2 → 0/10
-        "Volumes":    (vol_score    + 1) * 5.0,   # -1/+1 → 0/10
-        "Momentum":   rsi_radar_val,               # 0-10
-        "Structure":  adx_radar_val,               # 0-10
-    }
+    # Score plafonné -4 / +4
+    score = max(-4, min(4, score))
 
     return {
-        "total":       score,
-        "trend":       trend_score,
-        "macro":       macro_score,
-        "leadership":  leader_score,
-        "volume":      vol_score,
-        "rsi_score":   rsi_radar_val,
-        "adx_score":   adx_radar_val,
-        "radar":       radar,
-        "details":     details,
-        "rsi_raw":     rsi_val,
-        "adx_raw":     adx_val,
+        "total":    score,
+        "momentum":  mom_score,
+        "structure": struct_score,
+        "leadership": leader_score,
+        "details":  details,
+        "rsi_raw":  rsi_val,
+        "adx_raw":  info["adx"] if info else None,
     }
 
 # =============================================================================
@@ -729,24 +664,24 @@ def get_institutional_score(
 # =============================================================================
 
 def get_target_weight(score: int, initial_target: float) -> float:
-    """Matrice de Target Weight selon le score institutionnel."""
-    if score >= 4:
+    """Matrice de Target Weight selon le score unifié (-4 → +4)."""
+    if score >= 3:
         return initial_target      # Maintenir (ex: 25%)
-    elif score >= 2:
-        return 0.20               # Allègement léger
-    elif score >= 0:
-        return 0.15               # Vigilance
+    elif score >= 1:
+        return 0.20
+    elif score >= -1:
+        return 0.15
     else:
-        return 0.05               # Réduction forte / sortie
+        return 0.05
 
 
 def get_status_label(score: int) -> tuple:
-    """(label, css_class)"""
-    if score >= 4:
+    """(label, css_class) — seuils adaptés à la plage -4/+4."""
+    if score >= 3:
         return "MAINTIEN TOTAL", "status-maintain"
-    elif score >= 2:
+    elif score >= 1:
         return "ALLÈGEMENT LÉGER", "status-lighten"
-    elif score >= 0:
+    elif score >= -1:
         return "VIGILANCE", "status-vigilance"
     elif score >= -2:
         return "RÉDUCTION PARTIELLE", "status-reduce"
@@ -756,10 +691,6 @@ def get_status_label(score: int) -> tuple:
 
 def compute_strategic_arbitrage(positions_calculees: list, valeur_totale: float,
                                 scores: dict) -> list:
-    """
-    Calcule le montant exact à vendre/acheter par satellite.
-    Montant = Valeur_Actuelle - (Valeur_Totale × Target_Weight_Score)
-    """
     if valeur_totale <= 0:
         return []
     actions = []
@@ -788,7 +719,6 @@ def compute_strategic_arbitrage(positions_calculees: list, valeur_totale: float,
 # =============================================================================
 
 def check_leadership_alerts(data: dict) -> list:
-    """Calcule le gap cumulé vs MSCI World sur 14j glissants."""
     alerts = []
     world_df = None
     for wt in WORLD_TICKERS:
@@ -798,7 +728,6 @@ def check_leadership_alerts(data: dict) -> list:
             break
     if world_df is None:
         return alerts
-
     world_close = world_df["Close"].dropna()
     SAT_MAP = [("Global Hydrogen", "ANRJ.PA"), ("EM Asia", "AASI.PA")]
     for nom, tk in SAT_MAP:
@@ -817,7 +746,7 @@ def check_leadership_alerts(data: dict) -> list:
     return alerts
 
 # =============================================================================
-# ██  BLOC 9 : CALCULS PORTEFEUILLE (identique v3.4)
+# ██  BLOC 9 : CALCULS PORTEFEUILLE
 # =============================================================================
 
 def compute_portfolio(positions_conf, capital_reel, ajustement_pat, bonus_fortuneo, live_prices):
@@ -916,48 +845,77 @@ def net_apres_impots(enveloppe, montant, val_poche, gain_poche):
     return montant, ""
 
 # =============================================================================
-# ██  BLOC 11 : VISUALISATIONS — RADAR & PERFORMANCE RELATIVE
+# ██  BLOC 11 : VISUALISATIONS
 # =============================================================================
 
-def plot_radar(score_details: dict, nom: str) -> go.Figure:
-    cats   = ["Tendance", "Macro", "Leadership", "Volumes", "Momentum", "Structure"]
-    vals   = [score_details["radar"][c] for c in cats]
-    cats_c = cats + [cats[0]]
-    vals_c = vals + [vals[0]]
+# ── 11a : Graphique Alpha Bars (NOUVEAU v4.1) ─────────────────────────────────
 
-    total = score_details["total"]
-    color = "#D4AF37" if total >= 4 else "#22C55E" if total >= 2 else "#F97316" if total >= 0 else "#FF3131"
+def plot_alpha_bars(data: dict, ticker: str, nom: str) -> go.Figure | None:
+    """
+    Écart quotidien (Asset_Pct_Change - World_Pct_Change) × 100 sur 15 jours.
+    Barres vertes (#22C55E) si > 0, rouges (#FF3131) si < 0.
+    """
+    world_df = None
+    for wt in WORLD_TICKERS:
+        df = data.get(wt, pd.DataFrame())
+        if not df.empty and "Close" in df.columns:
+            world_df = df
+            break
+    sat_df = data.get(ticker, pd.DataFrame())
+    if world_df is None or sat_df is None or sat_df.empty:
+        return None
+
+    wc     = world_df["Close"].dropna()
+    sc     = sat_df["Close"].dropna()
+    common = sc.index.intersection(wc.index)
+    if len(common) < 17:          # 16 points pour 15 rendements journaliers
+        return None
+
+    # Rendements journaliers bruts (décimaux)
+    wc_sub = wc[common[-16:]]
+    sc_sub = sc[common[-16:]]
+    world_ret = wc_sub.pct_change().dropna()
+    sat_ret   = sc_sub.pct_change().dropna()
+
+    common_ret = sat_ret.index.intersection(world_ret.index)
+    alpha      = (sat_ret[common_ret] - world_ret[common_ret]) * 100   # en points %
+    alpha      = alpha.iloc[-15:]                                        # strict 15j
+
+    x_labels = [d.strftime("%d/%m") for d in alpha.index]
+    colors   = ["#22C55E" if v > 0 else "#FF3131" for v in alpha.values]
 
     fig = go.Figure()
-    # Zone neutre (référence 5/10)
-    fig.add_trace(go.Scatterpolar(
-        r=[5]*7, theta=cats_c,
-        line=dict(color="#3D4454", width=1, dash="dot"),
-        fill="toself", fillcolor="rgba(255,255,255,0.02)",
-        showlegend=False, name="Neutre"
+    fig.add_trace(go.Bar(
+        x=x_labels,
+        y=alpha.values,
+        marker_color=colors,
+        marker_line_width=0,
+        name="Alpha quotidien",
     ))
-    # Score actuel
-    fig.add_trace(go.Scatterpolar(
-        r=vals_c, theta=cats_c,
-        fill="toself",
-        fillcolor=f"rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.18)",
-        line=dict(color=color, width=2.5),
-        showlegend=False, name=nom
-    ))
+    fig.add_hline(y=0, line_dash="dot", line_color="#6B7585", opacity=0.6)
     fig.update_layout(
-        polar=dict(
-            bgcolor="rgba(0,0,0,0)",
-            radialaxis=dict(visible=True, range=[0, 10], gridcolor="#2E3340",
-                            tickfont=dict(size=8, color="#6B7585"), tickvals=[2.5, 5, 7.5, 10],
-                            ticktext=["", "", "", ""], showticklabels=False),
-            angularaxis=dict(gridcolor="#2E3340", tickfont=dict(size=11, color="#CBD5E1",
-                             family="DM Sans")),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#CBD5E1", family="DM Sans"),
+        margin=dict(t=35, b=25, l=55, r=15),
+        height=200,
+        showlegend=False,
+        xaxis=dict(gridcolor="#2E3340", showgrid=False,
+                   tickfont=dict(size=10, color="#8892AA")),
+        yaxis=dict(gridcolor="#2E3340", showgrid=True,
+                   ticksuffix="%",
+                   tickfont=dict(size=10, color="#8892AA"),
+                   title=dict(text="α (%pts)", font=dict(size=10, color="#6B7585"))),
+        title=dict(
+            text=f"<b>Alpha quotidien</b> : {nom} vs MSCI World — 15 derniers jours",
+            font=dict(size=12, color="#6B7585"), x=0
         ),
-        paper_bgcolor="rgba(0,0,0,0)", font=dict(color="#CBD5E1"),
-        margin=dict(t=30, b=30, l=50, r=50), height=330, showlegend=False,
+        bargap=0.25,
     )
     return fig
 
+
+# ── 11b : Performance Relative ────────────────────────────────────────────────
 
 def plot_relative_perf(data: dict, ticker: str, nom: str) -> go.Figure | None:
     world_df = None
@@ -974,7 +932,6 @@ def plot_relative_perf(data: dict, ticker: str, nom: str) -> go.Figure | None:
     common = sc.index.intersection(wc.index)
     if len(common) < 20:
         return None
-    # Fenêtre : depuis DATE_DEBUT ou 120j max
     cutoff = max(DATE_DEBUT.date(), (datetime.now() - timedelta(days=120)).date())
     common_f = [d for d in common if d.date() >= cutoff]
     if len(common_f) < 5:
@@ -982,29 +939,22 @@ def plot_relative_perf(data: dict, ticker: str, nom: str) -> go.Figure | None:
     ratio = (sc[common_f] / wc[common_f])
     rel   = (ratio / ratio.iloc[0] - 1) * 100
 
-    colors_pos = ["rgba(212,175,55,0.3)"  if v >= 0 else "rgba(255,49,49,0.0)"  for v in rel.values]
-    colors_neg = ["rgba(255,49,49,0.3)"   if v < 0  else "rgba(212,175,55,0.0)" for v in rel.values]
-
     fig = go.Figure()
-    # Fill positive
     fig.add_trace(go.Scatter(
         x=rel.index, y=rel.values.clip(min=0),
         fill="tozeroy", fillcolor="rgba(212,175,55,0.12)",
         line=dict(color="rgba(0,0,0,0)", width=0), showlegend=False,
     ))
-    # Fill negative
     fig.add_trace(go.Scatter(
         x=rel.index, y=rel.values.clip(max=0),
         fill="tozeroy", fillcolor="rgba(255,49,49,0.12)",
         line=dict(color="rgba(0,0,0,0)", width=0), showlegend=False,
     ))
-    # Main line
     fig.add_trace(go.Scatter(
         x=rel.index, y=rel.values,
         line=dict(color="#D4AF37", width=2),
         name=f"{nom} / World (%)",
     ))
-    # Fenêtre 14j
     if len(rel) >= 14:
         last14 = rel.iloc[-14:]
         fig.add_vrect(x0=last14.index[0], x1=last14.index[-1],
@@ -1028,7 +978,7 @@ def plot_relative_perf(data: dict, ticker: str, nom: str) -> go.Figure | None:
     return fig
 
 # =============================================================================
-# ██  BLOC 12 : RÈGLES DÉCISIONNELLES (compatibilité v3.4)
+# ██  BLOC 12 : RÈGLES DÉCISIONNELLES (compatibilité)
 # =============================================================================
 
 def evaluate_hydrogen(anrj):
@@ -1142,20 +1092,20 @@ phase_text, phase_color = determine_phase(gap, anrj_info, aasi_info, proxies_a, 
 
 macro_info = {}
 for sym in MACRO_TICKERS:
-    lp    = LIVE.get(sym, {})
+    lp     = LIVE.get(sym, {})
     prix_m = lp.get("prix")
     prev_m = lp.get("prev")
     macro_info[sym] = {"prix": prix_m, "prev": prev_m} if prix_m else None
 
-# ── Score Engine ───────────────────────────────────────────────────────────────
-score_h = get_institutional_score("ANRJ.PA", "hydrogen", DATA, LIVE, macro_info)
-score_a = get_institutional_score("AASI.PA", "em_asia",  DATA, LIVE, macro_info)
+# ── Score Engine Unifié v4.1 ───────────────────────────────────────────────────
+score_h = compute_unified_score("ANRJ.PA", DATA, LIVE)
+score_a = compute_unified_score("AASI.PA", DATA, LIVE)
 scores  = {"Global Hydrogen": score_h, "EM Asia": score_a}
 
-# ── Arbitrage Chirurgical ─────────────────────────────────────────────────────
+# ── Arbitrage Chirurgical ──────────────────────────────────────────────────────
 arb_actions = compute_strategic_arbitrage(positions_calculees, valeur_totale, scores)
 
-# ── Alertes Leadership ────────────────────────────────────────────────────────
+# ── Alertes Leadership ─────────────────────────────────────────────────────────
 leadership_alerts = check_leadership_alerts(DATA)
 
 now        = datetime.now(ZoneInfo("Europe/Paris"))
@@ -1167,6 +1117,33 @@ def sign_str(v):
     return "+" if v >= 0 else ""
 
 # =============================================================================
+# ██  SECTION UI 0 : EXPANDER MÉTHODOLOGIE DU SCORE (v4.1)
+# =============================================================================
+
+with st.expander("ℹ️ Méthodologie du Score", expanded=False):
+    st.markdown("""
+### Score Unifié v4.1 — 3 Couches · Plage −4 → +4
+
+| Couche | Indicateur | Signal BULL (+) | Signal BEAR (−) | Poids |
+|--------|-----------|----------------|-----------------|-------|
+| **Momentum** | RSI (14j) | 45 < RSI < 70 → **+1** (Sain) | RSI ≥ 70 → **−1** (Tendu) · RSI ≤ 45 → **−1** (Faible) | ±1 |
+| **Structure** | Prix vs SMA20 | Prix > SMA20 → **+1** (Solide) | Prix < SMA20 → **−1** (Fragile) | ±1 |
+| **Leadership** | Pente Force Relative 14j | Pente > 0 → **+2** (Leader vs World) | Pente < 0 → **−2** (Lagger vs World) | ±2 |
+
+**Score total = Momentum + Structure + Leadership** · Plage : −4 → +4
+
+| Score | Statut | Action d'arbitrage |
+|-------|--------|--------------------|
+| +3 / +4 | ✅ Maintien total | Conserver à la cible initiale (25%) |
+| +1 / +2 | 🟡 Allègement léger | Réduire à 20% du portefeuille |
+| −1 / 0 | 🟠 Vigilance | Réduire à 15% |
+| −2 | 🔴 Réduction partielle | Réduire à 5% |
+| −3 / −4 | 🚨 Sortie / Réduction forte | Sortie quasi-totale |
+
+> Aucune valeur par défaut grise : si une donnée est indisponible, la couche contribue **0** et le badge affiche **NEUTRE**.
+""")
+
+# =============================================================================
 # ██  SECTION UI 1 : HEADER
 # =============================================================================
 
@@ -1175,7 +1152,7 @@ st.markdown(
     '<span style="font-family:Space Mono,monospace;font-size:1.6rem;font-weight:700;color:#D4AF37;">◈</span>'
     '<span style="font-size:1.5rem;font-weight:700;color:#E2E8F0;">COCKPIT DÉCISIONNEL</span>'
     '<span style="font-family:Space Mono,monospace;font-size:.9rem;color:#6B7585;">'
-    'v4.0 · INSTITUTIONAL GRADE</span>'
+    'v4.1 · ULTRA-FOCUS</span>'
     '</div>',
     unsafe_allow_html=True
 )
@@ -1201,7 +1178,7 @@ st.markdown(
     f'{phase_text}</div>', unsafe_allow_html=True
 )
 
-# ── Alertes Leadership ─────────────────────────────────────────────────────────
+# ── Alertes Leadership ──────────────────────────────────────────────────────────
 for al in leadership_alerts:
     gap_val = al["gap"]
     nom_al  = al["nom"]
@@ -1220,7 +1197,7 @@ for al in leadership_alerts:
         f'{ico} <b>ALERTE LEADERSHIP : {nom_al}</b> — '
         f'Sous-performance persistante de <b>{abs(gap_val):.1f}%</b> vs World sur 14 jours glissants. '
         f'({nom_al} : {sign_str(s_pf)}{s_pf:.1f}% vs World : {sign_str(w_pf)}{w_pf:.1f}%) — '
-        f'Coût d\'opportunité détecté.'
+        f"Coût d'opportunité détecté."
         f'</div>', unsafe_allow_html=True
     )
 
@@ -1245,8 +1222,7 @@ with c1:
     st.markdown('</div>', unsafe_allow_html=True)
 
 with c2:
-    crd = "card card-blue"
-    st.markdown(f'<div class="{crd}">', unsafe_allow_html=True)
+    st.markdown('<div class="card card-blue">', unsafe_allow_html=True)
     kpi2 = "Gain Boursier Brut" if mode_direct else "Gain Réel Patrimonial"
     st.markdown(f'<div class="kpi-label">{kpi2}</div>', unsafe_allow_html=True)
     g_clr = "#22C55E" if gain_reel >= 0 else "#FF3131"
@@ -1256,8 +1232,7 @@ with c2:
     st.markdown('</div>', unsafe_allow_html=True)
 
 with c3:
-    crd = "card card-blue"
-    st.markdown(f'<div class="{crd}">', unsafe_allow_html=True)
+    st.markdown('<div class="card card-blue">', unsafe_allow_html=True)
     st.markdown('<div class="kpi-label">Performance Totale</div>', unsafe_allow_html=True)
     p     = ptf["perf_tot_pct"]
     p_clr = "#22C55E" if p >= 0 else "#FF3131"
@@ -1285,7 +1260,7 @@ with c4:
         st.markdown('<div class="kpi-value">N/A</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ── Positions + Donut ─────────────────────────────────────────────────────────
+# ── Positions + Donut ──────────────────────────────────────────────────────────
 st.markdown("### 📊 Positions détaillées")
 col_tab, col_pie = st.columns([3, 2])
 with col_tab:
@@ -1326,91 +1301,106 @@ with col_pie:
         st.plotly_chart(fig_pie, use_container_width=True)
 
 # =============================================================================
-# ██  SECTION UI 3 : SCORE ENGINE — HYDROGÈNE
+# ██  SECTION UI 3 : SCORE ENGINE — SATELLITES
+#    render_satellite_card : Linear Scoreboard v4.1
+#    (remplace l'ancien Radar Chart)
 # =============================================================================
 
-st.markdown("## 🧠 Score Stratégique Multi-Couches")
+st.markdown("## 🧠 Score Unifié — Satellites")
 
-def render_score_section(nom_sat, ticker_sat, theme_sat, score_data, arb_actions,
-                          positions_calculees, valeur_totale):
-    """Affiche le panneau Executive : Radar (gauche) + Carte Décision (droite)."""
+
+def render_satellite_card(nom_sat: str, ticker_sat: str, score_data: dict,
+                           arb_actions: list, positions_calculees: list,
+                           valeur_totale: float):
+    """
+    Panneau Linear Scoreboard v4.1 :
+      • Gauche  : Badge score total + tableau HTML 3 colonnes (Critère | Badge | Valeur)
+      • Droite  : Carte de Décision + Arbitrage Chirurgical
+    Suivi de : Alpha Bars + Performance Relative.
+    """
     total = score_data["total"]
-    if total >= 4:
-        score_cls = "score-pos"
+
+    if total >= 3:
+        score_cls   = "score-pos"
         card_border = "card-gold"
     elif total >= 0:
-        score_cls = "score-neut"
+        score_cls   = "score-neut"
         card_border = "card-orange"
     else:
-        score_cls = "score-neg"
+        score_cls   = "score-neg"
         card_border = "card-red"
 
     status_label, status_cls = get_status_label(total)
+    arb          = next((a for a in arb_actions if a["nom"] == nom_sat), None)
+    sign         = "+" if total > 0 else ""
 
-    arb = next((a for a in arb_actions if a["nom"] == nom_sat), None)
-
-    # Trouver la valeur actuelle
-    current_val = next((p["valeur"] for p in positions_calculees if p["nom"] == nom_sat), 0)
-
+    # ── Wrapper Card ──────────────────────────────────────────────────────────
     st.markdown(f'<div class="card {card_border}" style="padding:0;overflow:hidden;">', unsafe_allow_html=True)
 
-    col_radar, col_decision = st.columns([1, 1])
+    col_scoreboard, col_decision = st.columns([1, 1])
 
-    # ── Colonne Gauche : Radar Chart ──────────────────────────────────────────
-    with col_radar:
+    # ── COLONNE GAUCHE : Linear Scoreboard ───────────────────────────────────
+    with col_scoreboard:
+        st.markdown('<div style="padding:1.4rem 1.4rem 1rem 1.4rem;">', unsafe_allow_html=True)
+
+        # En-tête + Big score
         st.markdown(
-            f'<div style="padding:1.4rem 1.4rem 0.5rem 1.4rem;">'
-            f'<div class="kpi-label">{nom_sat} — Analyse 6 Couches</div>'
-            f'</div>', unsafe_allow_html=True
+            f'<div class="kpi-label">{nom_sat} — Score Unifié v4.1</div>'
+            f'<div style="margin:.4rem 0 1rem 0;">'
+            f'<span class="score-badge {score_cls}">{sign}{total}/4</span>'
+            f'</div>',
+            unsafe_allow_html=True
         )
-        fig_radar = plot_radar(score_data, nom_sat)
-        st.plotly_chart(fig_radar, use_container_width=True, config={"displayModeBar": False})
 
-        # Détail des couches
-        st.markdown('<div style="padding:0 1.4rem 1rem 1.4rem;">', unsafe_allow_html=True)
-        for layer_name, layer_val, layer_desc in score_data["details"]:
-            if layer_val is None:
-                color_l = "#6B7585"
-                bar_pct = "50%"
-                bar_clr = "#374151"
-                val_str = layer_desc
-            else:
-                if layer_val > 0:
-                    color_l, bar_clr = "#22C55E", "#22C55E"
-                elif layer_val < 0:
-                    color_l, bar_clr = "#FF3131", "#FF3131"
-                else:
-                    color_l, bar_clr = "#6B7585", "#374151"
-                # Normalise bar: map value to 0-100%
-                max_abs = {"Tendance": 2, "Macro": 1, "Leadership": 2, "Volumes": 1}.get(layer_name, 1)
-                bar_pct = f"{int((layer_val / max_abs + 1) / 2 * 100)}%"
-                val_str = f"{'+' if layer_val > 0 else ''}{layer_val}"
-
-            st.markdown(
-                f'<div class="layer-row">'
-                f'<span class="layer-name">{layer_name}</span>'
-                f'<div class="layer-bar-wrap">'
-                f'<div style="background:{bar_clr};width:{bar_pct};height:8px;border-radius:4px;transition:width .4s;"></div>'
-                f'</div>'
-                f'<span class="layer-val" style="color:{color_l};">{val_str if layer_val is not None else "—"}</span>'
-                f'</div>',
-                unsafe_allow_html=True
+        # Tableau HTML 3 colonnes : Critère | Badge | Valeur/Desc
+        badge_labels = {"bull": "BULL", "neut": "NEUTRE", "bear": "BEAR"}
+        rows_html = ""
+        for layer in score_data["details"]:
+            name  = layer["name"]
+            badge = layer["badge"]      # bull / neut / bear
+            val   = layer["score"]
+            desc  = layer["desc"]
+            val_str = f"{'+' if val > 0 else ''}{val}" if val != 0 else "0"
+            rows_html += (
+                f'<tr>'
+                f'<td class="col-name">{name}</td>'
+                f'<td class="col-badge">'
+                f'<span class="bg-{badge}">{badge_labels[badge]}</span>'
+                f'</td>'
+                f'<td class="col-val">'
+                f'<span style="color:{"#22C55E" if val > 0 else "#FF3131" if val < 0 else "#6B7585"};">'
+                f'{val_str}</span>'
+                f' &nbsp;<span style="color:#6B7585;font-size:.78rem;font-family:DM Sans,sans-serif;">'
+                f'— {desc}</span>'
+                f'</td>'
+                f'</tr>'
             )
+
+        st.markdown(
+            f'<table class="score-table">'
+            f'<thead><tr>'
+            f'<th>CRITÈRE</th>'
+            f'<th style="text-align:center;">SIGNAL</th>'
+            f'<th>VALEUR / DESCRIPTION</th>'
+            f'</tr></thead>'
+            f'<tbody>{rows_html}</tbody>'
+            f'</table>',
+            unsafe_allow_html=True
+        )
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── Colonne Droite : Carte de Décision ───────────────────────────────────
+    # ── COLONNE DROITE : Carte de Décision ───────────────────────────────────
     with col_decision:
         st.markdown('<div style="padding:1.4rem;">', unsafe_allow_html=True)
-        st.markdown('<div class="kpi-label">Score Institutionnel Final</div>', unsafe_allow_html=True)
+        st.markdown('<div class="kpi-label">Verdict Institutionnel</div>', unsafe_allow_html=True)
         st.markdown(
             f'<div style="margin:.5rem 0 .8rem 0;">'
-            f'<span class="score-badge {score_cls}">{sign_str(total) if total != 0 else ""}{total}/5</span>'
+            f'<div class="{status_cls}">{status_label}</div>'
             f'</div>', unsafe_allow_html=True
         )
-        st.markdown(f'<div class="{status_cls}">{status_label}</div>', unsafe_allow_html=True)
 
-        st.markdown('<div style="margin-top:1rem; margin-bottom:.4rem;">'
-                    '<div class="kpi-label">Arbitrage Chirurgical</div></div>', unsafe_allow_html=True)
+        st.markdown('<div class="kpi-label" style="margin-top:1rem;">Arbitrage Chirurgical</div>',
+                    unsafe_allow_html=True)
 
         if arb:
             target_pct = arb["target_pct"]
@@ -1428,8 +1418,7 @@ def render_score_section(nom_sat, ticker_sat, theme_sat, score_data, arb_actions
                     f'<div style="margin-top:.6rem;font-size:.78rem;color:#6B7585;">'
                     f'Poids actuel : <span style="color:#FCA5A5;">{cur_pct:.1f}%</span> → '
                     f'Cible score : <span style="color:#22C55E;">{target_pct:.0f}%</span>'
-                    f'</div></div>',
-                    unsafe_allow_html=True
+                    f'</div></div>', unsafe_allow_html=True
                 )
             elif action == "ACHETER":
                 st.markdown(
@@ -1441,8 +1430,7 @@ def render_score_section(nom_sat, ticker_sat, theme_sat, score_data, arb_actions
                     f'<div style="margin-top:.6rem;font-size:.78rem;color:#6B7585;">'
                     f'Poids actuel : <span style="color:#86EFAC;">{cur_pct:.1f}%</span> → '
                     f'Cible : <span style="color:#D4AF37;">{target_pct:.0f}%</span>'
-                    f'</div></div>',
-                    unsafe_allow_html=True
+                    f'</div></div>', unsafe_allow_html=True
                 )
             else:
                 st.markdown(
@@ -1451,16 +1439,13 @@ def render_score_section(nom_sat, ticker_sat, theme_sat, score_data, arb_actions
                     f'<div style="font-size:1.1rem;color:#CBD5E1;font-weight:600;">MAINTENIR</div>'
                     f'<div style="font-size:.82rem;color:#8892AA;margin-top:.4rem;">'
                     f'Poids {cur_pct:.1f}% ≈ Cible {target_pct:.0f}%</div>'
-                    f'</div>',
-                    unsafe_allow_html=True
+                    f'</div>', unsafe_allow_html=True
                 )
 
-            # Mini métriques
             col_m1, col_m2, col_m3 = st.columns(3)
             col_m1.metric("Valeur actuelle", f"{arb['current_value']:,.0f}€")
-            col_m2.metric("Cible (€)", f"{arb['target_value']:,.0f}€")
-            col_m3.metric("Δ score", f"{sign_str(total)}{total}/5")
-
+            col_m2.metric("Cible (€)",       f"{arb['target_value']:,.0f}€")
+            col_m3.metric("Score",           f"{sign}{total}/4")
         else:
             st.info("Données arbitrage indisponibles")
 
@@ -1470,14 +1455,19 @@ def render_score_section(nom_sat, ticker_sat, theme_sat, score_data, arb_actions
             st.markdown('<div class="kpi-label" style="margin-top:1rem;">Indicateurs clés</div>',
                         unsafe_allow_html=True)
             col_t1, col_t2, col_t3, col_t4 = st.columns(4)
-            col_t1.metric("Prix", f"{info_t['prix']:.2f}€")
-            col_t2.metric("SMA50",  f"{info_t['sma50']:.2f}€"  if info_t["sma50"]  else "–")
-            col_t3.metric("SMA200", f"{info_t['sma200']:.2f}€" if info_t["sma200"] else "–")
-            col_t4.metric("RSI",    f"{info_t['rsi']:.1f}"     if info_t["rsi"]    else "–")
+            col_t1.metric("Prix",   f"{info_t['prix']:.2f}€")
+            col_t2.metric("SMA20",  f"{info_t['sma20']:.2f}€"  if info_t["sma20"]  else "–")
+            col_t3.metric("SMA50",  f"{info_t['sma50']:.2f}€"  if info_t["sma50"]  else "–")
+            col_t4.metric("RSI",    f"{info_t['rsi']:.1f}"      if info_t["rsi"]    else "–")
 
         st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('</div>', unsafe_allow_html=True)  # close card
+
+    # ── Graphique Alpha Bars (NOUVEAU v4.1) ───────────────────────────────────
+    fig_alpha = plot_alpha_bars(DATA, ticker_sat, nom_sat)
+    if fig_alpha:
+        st.plotly_chart(fig_alpha, use_container_width=True, config={"displayModeBar": False})
 
     # ── Graphique Performance Relative ────────────────────────────────────────
     fig_rel = plot_relative_perf(DATA, ticker_sat, nom_sat)
@@ -1486,16 +1476,16 @@ def render_score_section(nom_sat, ticker_sat, theme_sat, score_data, arb_actions
 
 
 # ── Hydrogène ──────────────────────────────────────────────────────────────────
-render_score_section(
-    "Global Hydrogen", "ANRJ.PA", "hydrogen",
+render_satellite_card(
+    "Global Hydrogen", "ANRJ.PA",
     score_h, arb_actions, positions_calculees, valeur_totale
 )
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ── EM Asia ───────────────────────────────────────────────────────────────────
-render_score_section(
-    "EM Asia", "AASI.PA", "em_asia",
+render_satellite_card(
+    "EM Asia", "AASI.PA",
     score_a, arb_actions, positions_calculees, valeur_totale
 )
 
@@ -1546,12 +1536,12 @@ with col_macro:
     FMT = {"NQ=F":".2f","ES=F":".2f","^TNX":".3f","EURUSD=X":".4f",
            "BZ=F":".2f","GC=F":".2f","DX-Y.NYB":".2f","MCHI":".2f"}
     SFX = {"^TNX":"%","BZ=F":"$","GC=F":"$","NQ=F":"","ES=F":"","EURUSD=X":"","DX-Y.NYB":"","MCHI":""}
-    SIGNALS = {"^TNX": (4.50, "↑ Défavorable hydro", "↓ OK hydro"),
-               "DX-Y.NYB": (105.0, "↑ Pression EM", "↓ OK EM")}
+    SIGNALS = {"^TNX":     (4.50,  "↑ Défavorable hydro", "↓ OK hydro"),
+               "DX-Y.NYB": (105.0, "↑ Pression EM",       "↓ OK EM")}
     for sym, label in MACRO_TICKERS.items():
         info_m = macro_info.get(sym)
         if info_m and info_m.get("prix"):
-            p_val = info_m["prix"]
+            p_val  = info_m["prix"]
             prev_m = info_m.get("prev")
             delta_m = (
                 f'{sign_str((p_val-prev_m)/prev_m*100)}{(p_val-prev_m)/prev_m*100:.2f}%'
@@ -1621,11 +1611,15 @@ elif montant_sim > 0:
     imp_sim  = montant_sim - net_sim
     st.markdown(
         f'<div class="net-box" style="display:flex;gap:2.5rem;flex-wrap:wrap;align-items:center;">'
-        f'<div><div class="kpi-label">Brut retiré</div><div class="kpi-value">{montant_sim:,.2f}€</div></div>'
+        f'<div><div class="kpi-label">Brut retiré</div>'
+        f'<div class="kpi-value">{montant_sim:,.2f}€</div></div>'
         f'<div style="color:#6B7585;font-size:1.5rem;">→</div>'
-        f'<div><div class="kpi-label">Part gains</div><div class="kpi-value" style="color:#D4AF37;">{gain_sim:,.2f}€</div></div>'
-        f'<div><div class="kpi-label">Impôts/PS</div><div class="kpi-value" style="color:#FF3131;">{imp_sim:,.2f}€</div></div>'
-        f'<div><div class="kpi-label">Net perçu</div><div class="kpi-value" style="color:#22C55E;">{net_sim:,.2f}€</div></div>'
+        f'<div><div class="kpi-label">Part gains</div>'
+        f'<div class="kpi-value" style="color:#D4AF37;">{gain_sim:,.2f}€</div></div>'
+        f'<div><div class="kpi-label">Impôts/PS</div>'
+        f'<div class="kpi-value" style="color:#FF3131;">{imp_sim:,.2f}€</div></div>'
+        f'<div><div class="kpi-label">Net perçu</div>'
+        f'<div class="kpi-value" style="color:#22C55E;">{net_sim:,.2f}€</div></div>'
         f'</div>', unsafe_allow_html=True
     )
 st.markdown('</div>', unsafe_allow_html=True)
@@ -1639,9 +1633,12 @@ col_f1, col_f2 = st.columns([4, 1])
 with col_f1:
     mode_txt  = "🔌 MODE DIRECT" if mode_direct else f"Ajust. {ajustement_pat_input:,.2f}€"
     cfg_txt   = f"Config : {_CONFIG_PATH}" if os.path.exists(_CONFIG_PATH) else "Config : défauts"
-    score_txt = f"Score H={sign_str(score_h['total'])}{score_h['total']}/5 · EM={sign_str(score_a['total'])}{score_a['total']}/5"
+    score_txt = (
+        f"Score H={sign_str(score_h['total'])}{score_h['total']}/4 · "
+        f"EM={sign_str(score_a['total'])}{score_a['total']}/4"
+    )
     st.caption(
-        f"◈ Cockpit v4.0 Institutional · {mode_txt} · {score_txt} · "
+        f"◈ Cockpit v4.1 Ultra-Focus · {mode_txt} · {score_txt} · "
         f"Capital {capital_reel_input:,.2f}€ · {cfg_txt} · "
         "Outil personnel — Ne constitue pas un conseil en investissement"
     )
