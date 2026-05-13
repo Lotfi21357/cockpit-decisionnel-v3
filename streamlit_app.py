@@ -1,18 +1,20 @@
 # =============================================================================
-# COCKPIT DÉCISIONNEL BOURSIER v3.3
+# COCKPIT DÉCISIONNEL BOURSIER v3.4
 # Lead Dev: Claude (Anthropic) — Prix live via fast_info / Historique technique via download
 # v3.2 : Ajustement patrimonial (Bonus Fortuneo + TBC) + Capital réel sorti banque
 # v3.3 : Correction source Or → OR-EUR.PA (Euronext Paris) + DE000SLA8RU8.SG (Stuttgart)
+# v3.4 : Persistance config_perso.json + Mode Direct (vue brute sans ajustements)
 # =============================================================================
 
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+import json
+import os
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -21,7 +23,7 @@ warnings.filterwarnings("ignore")
 # =============================================================================
 
 st.set_page_config(
-    page_title="Cockpit Décisionnel v3.3",
+    page_title="Cockpit Décisionnel v3.4",
     page_icon="🛰️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -44,6 +46,7 @@ st.markdown("""
     .card-green  { border-left: 4px solid #22C55E; }
     .card-red    { border-left: 4px solid #EF4444; }
     .card-orange { border-left: 4px solid #F97316; }
+    .card-brut   { border-left: 4px solid #A855F7; background: linear-gradient(135deg,#1A1030 0%,#1E1535 100%); }
 
     /* ── KPIs ── */
     .kpi-value { font-size: 2rem; font-weight: 800; color: #FFFFFF; font-family: 'SF Mono', monospace; }
@@ -74,6 +77,14 @@ st.markdown("""
         font-size: 1rem; margin-bottom: 1.2rem; text-align: center;
     }
 
+    /* ── Mode Direct banner ── */
+    .mode-direct-banner {
+        background: linear-gradient(135deg,#3B0764,#4C1D95);
+        border: 1px solid #7C3AED; border-radius: 10px;
+        padding: 0.7rem 1.2rem; margin-bottom: 1rem;
+        color: #E9D5FF; font-weight: 700; font-size: 0.95rem; text-align: center;
+    }
+
     /* ── Table ── */
     .stDataFrame { background-color: #141824 !important; }
 
@@ -87,18 +98,22 @@ st.markdown("""
                  padding:0.75rem 1rem; margin:0.4rem 0; font-size:0.9rem; }
     .info-box { background:#0F1E35; border-left:4px solid #3D8BFF; border-radius:8px;
                 padding:0.75rem 1rem; margin:0.4rem 0; font-size:0.9rem; }
+    .save-box { background:#0D1F0D; border-left:4px solid #22C55E; border-radius:8px;
+                padding:0.6rem 1rem; margin:0.3rem 0; font-size:0.85rem; color:#86EFAC; }
     .live-badge { display:inline-block; background:#22C55E; color:#0B0E15; border-radius:4px;
                   font-size:0.65rem; font-weight:800; padding:0.1rem 0.4rem;
                   letter-spacing:0.5px; vertical-align:middle; margin-left:0.4rem; }
-    /* ── Ajustement badge ── */
     .adj-badge { display:inline-block; background:#6366F1; color:white; border-radius:4px;
                  font-size:0.65rem; font-weight:800; padding:0.1rem 0.4rem;
                  letter-spacing:0.5px; vertical-align:middle; margin-left:0.4rem; }
+    .brut-badge { display:inline-block; background:#A855F7; color:white; border-radius:4px;
+                  font-size:0.65rem; font-weight:800; padding:0.1rem 0.4rem;
+                  letter-spacing:0.5px; vertical-align:middle; margin-left:0.4rem; }
 </style>
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# ██████╗  BLOC 2 : CONFIGURATION DU PORTEFEUILLE
+# ██████╗  BLOC 2 : CONSTANTES & PERSISTANCE JSON  ★ v3.4
 # =============================================================================
 
 POSITIONS_BASE = [
@@ -106,19 +121,62 @@ POSITIONS_BASE = [
     {"nom": "MSCI World PEA",  "tickers": ["DCAM.PA"],                      "parts": 481.0,   "prm": 5.5937,  "enveloppe": "PEA"},
     {"nom": "Global Hydrogen", "tickers": ["ANRJ.PA"],                      "parts": 4.7701,  "prm": 707.55,  "enveloppe": "AV"},
     {"nom": "EM Asia",         "tickers": ["AASI.PA"],                      "parts": 40.8272, "prm": 49.96,   "enveloppe": "AV"},
-    # ★ v3.3 : OR-EUR.PA (Euronext Paris, prix en €) en source principale
-    #           DE000SLA8RU8.SG (iNAV Stuttgart) en fallback fiable
-    #           Anciens tickers conservés en dernier recours uniquement
     {"nom": "Or Physique",     "tickers": ["OR-EUR.PA","DE000SLA8RU8.SG","CGLD.PA","GOLD.PA"], "parts": 4.5902, "prm": 163.39, "enveloppe": "AV"},
 ]
 
-# ── ★ v3.2 : Constantes patrimoniales ─────────────────────────────────────────
-# Capital réellement sorti du compte bancaire (hors bonus)
-CAPITAL_REEL_SORTI_BANQUE: float = 13_796.71
+# Valeurs hardcodées (utilisées comme fallback si config_perso.json absent)
+_DEFAULT_CAPITAL_REEL   = 13_796.71
+_DEFAULT_AJUSTEMENT_PAT = 219.97
+_DEFAULT_BONUS_FORTUNEO = 160.0
 
-# Ajustement = Bonus Fortuneo (160 €) + Plus-values réalisées réinvesties TBC (59.97 €)
-AJUSTEMENT_PATRIMONIAL: float    = 219.97
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Chemin du fichier de config (même dossier que le script) ─────────────────
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_perso.json")
+
+
+def load_config() -> dict:
+    """
+    Charge config_perso.json s'il existe.
+    Retourne les valeurs par défaut si le fichier est absent ou corrompu.
+    """
+    defaults = {
+        "capital_reel":   _DEFAULT_CAPITAL_REEL,
+        "ajustement_pat": _DEFAULT_AJUSTEMENT_PAT,
+        "bonus_fortuneo": _DEFAULT_BONUS_FORTUNEO,
+    }
+    try:
+        if os.path.exists(_CONFIG_PATH):
+            with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # Merge : les clés manquantes prennent la valeur par défaut
+            return {**defaults, **{k: float(v) for k, v in data.items() if k in defaults}}
+    except Exception:
+        pass
+    return defaults
+
+
+def save_config(capital_reel: float, ajustement_pat: float, bonus_fortuneo: float) -> bool:
+    """Sauvegarde les paramètres dans config_perso.json. Retourne True si OK."""
+    try:
+        payload = {
+            "capital_reel":   round(capital_reel, 2),
+            "ajustement_pat": round(ajustement_pat, 2),
+            "bonus_fortuneo": round(bonus_fortuneo, 2),
+        }
+        with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
+# Chargement au démarrage (une seule fois par session via st.session_state)
+if "config_loaded" not in st.session_state:
+    cfg = load_config()
+    st.session_state["cfg_capital_reel"]   = cfg["capital_reel"]
+    st.session_state["cfg_ajustement_pat"] = cfg["ajustement_pat"]
+    st.session_state["cfg_bonus_fortuneo"] = cfg["bonus_fortuneo"]
+    st.session_state["config_loaded"]      = True
+    st.session_state["save_feedback"]      = ""   # message de feedback sauvegarde
 
 BENCHMARK_NOM  = "MSCI World AV"
 PROXIES_ANRJ   = ["PLUG", "BE", "NEL.OL"]
@@ -141,24 +199,58 @@ SENTINELLES = {
 DATE_DEBUT = datetime(2025, 9, 17)
 
 # =============================================================================
-# ██████╗  BLOC 3 : SIDEBAR — PARAMÈTRES DYNAMIQUES
+# ██████╗  BLOC 3 : SIDEBAR — PARAMÈTRES DYNAMIQUES  ★ v3.4
 # =============================================================================
 
 st.sidebar.markdown("## ⚙️ Paramètres")
 
-# ── ★ v3.2 : Les deux constantes sont éditables en sidebar pour flexibilité ──
-capital_reel   = st.sidebar.number_input(
-    "Capital réel sorti banque (€)",
-    value=CAPITAL_REEL_SORTI_BANQUE, step=100.0, format="%.2f"
-)
-ajustement_pat = st.sidebar.number_input(
-    "Ajustement patrimonial (€) [Bonus + TBC]",
-    value=AJUSTEMENT_PATRIMONIAL, step=1.0, format="%.2f",
-    help="Bonus Fortuneo (160 €) + Plus-values réalisées réinvesties TBC (59.97 €)"
+# ── ★ v3.4 : Mode Direct (toggle vue brute) ──────────────────────────────────
+mode_direct = st.sidebar.toggle(
+    "🔌 Mode Direct (Vue Brute)",
+    value=False,
+    help="Force ajustement_pat=0 et bonus_fortuneo=0 — affiche la valeur boursière pure sans bonus ni TBC."
 )
 
-# Conservé pour rétrocompatibilité des calculs fiscaux (PEA PRM déduction)
-bonus_fortuneo = st.sidebar.number_input("Bonus Fortuneo seul (€, PRM PEA)", value=160.0, step=10.0, format="%.2f")
+st.sidebar.markdown("---")
+
+# ── Inputs avec valeurs par défaut issues du JSON ────────────────────────────
+capital_reel_input = st.sidebar.number_input(
+    "Capital réel sorti banque (€)",
+    value=st.session_state["cfg_capital_reel"],
+    step=100.0, format="%.2f",
+    key="input_capital_reel"
+)
+ajustement_pat_input = st.sidebar.number_input(
+    "Ajustement patrimonial (€) [Bonus + TBC]",
+    value=st.session_state["cfg_ajustement_pat"],
+    step=1.0, format="%.2f",
+    help="Bonus Fortuneo (160 €) + Plus-values réalisées réinvesties TBC (59.97 €)",
+    key="input_ajustement_pat"
+)
+bonus_fortuneo_input = st.sidebar.number_input(
+    "Bonus Fortuneo seul (€, PRM PEA)",
+    value=st.session_state["cfg_bonus_fortuneo"],
+    step=10.0, format="%.2f",
+    key="input_bonus_fortuneo"
+)
+
+# ── ★ v3.4 : Bouton Sauvegarder ──────────────────────────────────────────────
+if st.sidebar.button("💾 Sauvegarder les paramètres", use_container_width=True):
+    ok = save_config(capital_reel_input, ajustement_pat_input, bonus_fortuneo_input)
+    if ok:
+        # Met à jour session_state pour que les valeurs soient les nouvelles valeurs par défaut
+        st.session_state["cfg_capital_reel"]   = capital_reel_input
+        st.session_state["cfg_ajustement_pat"] = ajustement_pat_input
+        st.session_state["cfg_bonus_fortuneo"] = bonus_fortuneo_input
+        st.session_state["save_feedback"] = "✅ Paramètres sauvegardés dans config_perso.json"
+    else:
+        st.session_state["save_feedback"] = "❌ Erreur d'écriture — vérifiez les droits du dossier"
+
+# Affichage du feedback de sauvegarde
+if st.session_state.get("save_feedback"):
+    fb = st.session_state["save_feedback"]
+    box_cls = "save-box" if fb.startswith("✅") else "alert-box"
+    st.sidebar.markdown(f'<div class="{box_cls}">{fb}</div>', unsafe_allow_html=True)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📦 Positions")
@@ -170,10 +262,22 @@ for pos in POSITIONS_BASE:
         prm   = st.number_input("PRM (€)", value=float(pos["prm"]),  step=0.0001, format="%.4f", key=f"r_{pos['nom']}")
         positions_conf.append({**pos, "parts": parts, "prm": prm})
 
-# Ajustement PRM PEA (déduction prorata du bonus)
+# ── ★ v3.4 : Valeurs effectives selon Mode Direct ────────────────────────────
+# En Mode Direct : ajustement et bonus = 0 → vue boursière pure
+# En mode normal : utilise les valeurs saisies
+if mode_direct:
+    capital_reel   = capital_reel_input     # Le capital de référence reste inchangé
+    ajustement_pat = 0.0                    # Pas d'ajustement
+    bonus_fortuneo = 0.0                    # Pas de déduction bonus sur PRM PEA
+else:
+    capital_reel   = capital_reel_input
+    ajustement_pat = ajustement_pat_input
+    bonus_fortuneo = bonus_fortuneo_input
+
+# ── Ajustement PRM PEA — tient compte du Mode Direct (bonus_fortuneo peut être 0) ──
 for pos in positions_conf:
     if pos["nom"] == "MSCI World PEA" and pos["parts"] > 0:
-        pos["prm"] -= bonus_fortuneo / pos["parts"]
+        pos["prm"] -= bonus_fortuneo / pos["parts"]   # = 0 si Mode Direct actif
 
 # =============================================================================
 # ██████╗  BLOC 4 : DATA ENGINE — PRIX LIVE + HISTORIQUE TECHNIQUE
@@ -372,28 +476,26 @@ def analyze_ticker(data: dict, live_prices: dict, ticker: str):
     }
 
 # =============================================================================
-# ██████╗  BLOC 6 : CALCULS PORTEFEUILLE ★ v3.2 — GAIN RÉEL PATRIMONIAL
+# ██████╗  BLOC 6 : CALCULS PORTEFEUILLE  ★ v3.2/v3.4
 # =============================================================================
 
 def compute_portfolio(positions_conf: list, capital_reel: float,
                       ajustement_pat: float, bonus_fortuneo: float,
                       live_prices: dict) -> dict:
     """
-    ★ v3.2 — Formule patrimoniale corrigée :
-      Valeur_Titres_Actuelle     = Σ(Quantité × Prix_Direct)          [= valeur_totale]
-      Solde_Total_Portefeuille   = Valeur_Titres_Actuelle + AJUSTEMENT_PATRIMONIAL
-      Gain_Total_Reel            = Solde_Total_Portefeuille - CAPITAL_REEL_SORTI_BANQUE
-      Perf_%                     = Gain_Total_Reel / CAPITAL_REEL_SORTI_BANQUE × 100
+    Formule patrimoniale :
+      Valeur_Titres          = Σ(Quantité × Prix_Direct)
+      Solde_Total            = Valeur_Titres + ajustement_pat
+      Gain_Reel              = Solde_Total - capital_reel
+      Perf_%                 = Gain_Reel / capital_reel × 100
 
-    L'ajustement patrimonial absorbe :
-      • 160,00 € Bonus Fortuneo (argent offert, non sorti de la poche)
-      • 59,97 €  Plus-values réalisées & réinvesties (TBC)
+    En Mode Direct : ajustement_pat=0 → Solde_Total = Valeur_Titres (vue brute)
     """
     positions_calculees = []
     valeur_totale = 0.0
     valeur_veille = 0.0
     val_env  = {"PEA": 0.0, "AV": 0.0}
-    gain_env = {"PEA": 0.0, "AV": 0.0}   # gains ligne à ligne (pour fiscalité)
+    gain_env = {"PEA": 0.0, "AV": 0.0}
 
     for pos in positions_conf:
         prix, prev, tk_used = get_price_info(live_prices, pos["tickers"])
@@ -422,31 +524,24 @@ def compute_portfolio(positions_conf: list, capital_reel: float,
             "var_jour_pct": var_jour_pct, "var_jour_eur": var_jour_eur,
             "enveloppe": env,
         })
-        valeur_totale   += valeur
-        val_env[env]    += valeur
-        gain_env[env]   += gain_total
-        valeur_veille   += pos["parts"] * (prev if prev else prix)
+        valeur_totale += valeur
+        val_env[env]  += valeur
+        gain_env[env] += gain_total
+        valeur_veille += pos["parts"] * (prev if prev else prix)
 
-    # ── ★ v3.2 : Calcul patrimonial réel ──────────────────────────────────────
-    # Étape 1 — Solde total = titres + ajustements hors-marché
-    solde_total = valeur_totale + ajustement_pat
-
-    # Étape 2 — Gain réel = ce que vaut le patrimoine vs ce qui est sorti du compte
-    gain_reel   = solde_total - capital_reel
-
-    # Étape 3 — Performance % sur le capital réellement engagé
+    solde_total  = valeur_totale + ajustement_pat
+    gain_reel    = solde_total - capital_reel
     perf_tot_pct = (gain_reel / capital_reel * 100) if capital_reel else 0.0
-    # ─────────────────────────────────────────────────────────────────────────
 
     perf_j_eur = valeur_totale - valeur_veille
     perf_j_pct = perf_j_eur / valeur_veille * 100 if valeur_veille else 0.0
 
     return {
         "positions":      positions_calculees,
-        "valeur_totale":  valeur_totale,       # Valeur titres seule (sans ajustement)
-        "solde_total":    solde_total,          # ★ Solde affiché = titres + ajustement
-        "gain_reel":      gain_reel,            # ★ Gain patrimonial réel
-        "perf_tot_pct":   perf_tot_pct,         # ★ Perf % sur capital réel
+        "valeur_totale":  valeur_totale,
+        "solde_total":    solde_total,
+        "gain_reel":      gain_reel,
+        "perf_tot_pct":   perf_tot_pct,
         "valeur_veille":  valeur_veille,
         "val_env":        val_env,
         "gain_env":       gain_env,
@@ -459,17 +554,12 @@ def compute_portfolio(positions_conf: list, capital_reel: float,
 
 def compute_benchmark(data: dict, live_prices: dict, positions_conf: list,
                       perf_tot_pct: float) -> tuple:
-    """
-    ★ v3.2 — Le gap utilise le perf_tot_pct patrimonial (gain_reel / capital_reel).
-    """
     bench_pos = next((p for p in positions_conf if p["nom"] == BENCHMARK_NOM), None)
     if not bench_pos:
         return None, None, None, None
-
     prix, prev, tk = get_price_info(live_prices, bench_pos["tickers"])
     if not prix:
         return None, None, None, None
-
     hist_tk = tk
     df_hist = data.get(hist_tk, pd.DataFrame())
     if df_hist.empty:
@@ -478,10 +568,8 @@ def compute_benchmark(data: dict, live_prices: dict, positions_conf: list,
             if not df_hist.empty:
                 hist_tk = t
                 break
-
     if df_hist.empty:
         return None, None, prix, None
-
     close = df_hist["Close"].dropna()
     start_str = DATE_DEBUT.strftime("%Y-%m-%d")
     try:
@@ -489,9 +577,7 @@ def compute_benchmark(data: dict, live_prices: dict, positions_conf: list,
     except KeyError:
         candidates = close.loc[:start_str]
         start_val = float(candidates.iloc[-1]) if not candidates.empty else float(close.iloc[0])
-
     perf_bench   = (prix / start_val - 1) * 100 if start_val else None
-    # ★ v3.2 — gap = performance patrimoniale réelle − performance benchmark
     gap          = perf_tot_pct - perf_bench if perf_bench is not None else None
     perf_bench_j = (prix - prev) / prev * 100 if prev and prev != 0 else None
     return perf_bench, gap, prix, perf_bench_j
@@ -508,13 +594,11 @@ def net_apres_impots(enveloppe: str, montant: float, val_poche: float, gain_poch
     ratio_gain   = gain_poche / val_poche if val_poche else 0
     gain_retrait = montant * ratio_gain
     now_tz       = datetime.now(ZoneInfo("Europe/Paris"))
-
     if enveloppe == "PEA":
         limite = datetime(2031, 4, 1, tzinfo=ZoneInfo("Europe/Paris"))
         if now_tz < limite:
             return 0.0, "⚠️ Retrait PEA impossible avant le 01/04/2031 (fermeture enveloppe)"
         return montant - 0.172 * gain_retrait, ""
-
     if enveloppe == "AV":
         limite_8ans = datetime(2033, 9, 17, tzinfo=ZoneInfo("Europe/Paris"))
         if now_tz < limite_8ans:
@@ -522,7 +606,6 @@ def net_apres_impots(enveloppe: str, montant: float, val_poche: float, gain_poch
         ps = 0.172 * gain_retrait
         ir = 0.128 * max(0, gain_retrait - 9200)
         return montant - ps - ir, ""
-
     return montant, ""
 
 # =============================================================================
@@ -562,8 +645,7 @@ def evaluate_em_asia(aasi) -> tuple:
 
 
 def evaluate_sentinelles(data: dict, live_prices: dict) -> tuple:
-    alerts = []
-    rows   = []
+    alerts, rows = [], []
     for name, tickers in SENTINELLES.items():
         info = None
         for tk in tickers:
@@ -575,11 +657,11 @@ def evaluate_sentinelles(data: dict, live_prices: dict) -> tuple:
             alerte = "⚠️"
             alerts.append(name)
         rows.append({
-            "Sentinelle":   name,
-            "Prix":         f"{info['prix']:.2f}"   if info else "N/A",
-            "SMA20":        f"{info['sma20']:.2f}"  if (info and info["sma20"]) else "N/A",
-            "RSI":          f"{info['rsi']:.1f}"    if (info and info["rsi"])   else "N/A",
-            "Alerte":       alerte,
+            "Sentinelle": name,
+            "Prix":   f"{info['prix']:.2f}"  if info else "N/A",
+            "SMA20":  f"{info['sma20']:.2f}" if (info and info["sma20"]) else "N/A",
+            "RSI":    f"{info['rsi']:.1f}"   if (info and info["rsi"])   else "N/A",
+            "Alerte": alerte,
         })
     msg = " | ".join([f"⚠️ {a} sous SMA20" for a in alerts]) if alerts else "✅ Sentinelles OK"
     col = "orange" if alerts else "green"
@@ -622,8 +704,8 @@ def compute_arbitrage(positions_calculees: list, valeur_totale: float, anrj, aas
     actions = []
     if valeur_totale <= 0:
         return actions
-    anrj_val = next((p["valeur"] for p in positions_calculees if p["nom"] == "Global Hydrogen"), 0)
-    aasi_val = next((p["valeur"] for p in positions_calculees if p["nom"] == "EM Asia"), 0)
+    anrj_val  = next((p["valeur"] for p in positions_calculees if p["nom"] == "Global Hydrogen"), 0)
+    aasi_val  = next((p["valeur"] for p in positions_calculees if p["nom"] == "EM Asia"), 0)
     poids_sat = (anrj_val + aasi_val) / valeur_totale * 100
     if anrj and anrj["sma20"] and anrj["prix"] < anrj["sma20"] and anrj_val > 0:
         actions.append(f"🚨 Vendre **{anrj_val * 0.25:,.2f}€** d'ANRJ → renforcer MSCI World AV")
@@ -648,35 +730,26 @@ if not LIVE:
     st.error("❌ Aucun prix live récupéré. Vérifiez votre connexion internet.")
     st.stop()
 
-# ── ★ v3.2 : compute_portfolio reçoit capital_reel et ajustement_pat ─────────
-ptf = compute_portfolio(
-    positions_conf,
-    capital_reel,
-    ajustement_pat,
-    bonus_fortuneo,
-    LIVE
-)
+# Les valeurs effectives (capital_reel / ajustement_pat / bonus_fortuneo) sont
+# déjà calculées en BLOC 3 selon le Mode Direct. On les passe directement.
+ptf = compute_portfolio(positions_conf, capital_reel, ajustement_pat, bonus_fortuneo, LIVE)
 
-# ── Extraction des variables du portefeuille ──────────────────────────────────
 positions_calculees = ptf["positions"]
-valeur_totale       = ptf["valeur_totale"]   # Valeur brute des titres
-solde_total         = ptf["solde_total"]     # ★ Titres + ajustement patrimonial
-gain_reel           = ptf["gain_reel"]       # ★ Gain patrimonial réel
+valeur_totale       = ptf["valeur_totale"]
+solde_total         = ptf["solde_total"]
+gain_reel           = ptf["gain_reel"]
 val_env             = ptf["val_env"]
 gain_env            = ptf["gain_env"]
 
-# ── Benchmark (gap calculé sur perf_tot_pct patrimoniale) ────────────────────
 perf_bench, gap, bench_prix, perf_bench_j = compute_benchmark(
     DATA, LIVE, positions_conf, ptf["perf_tot_pct"]
 )
 
-# ── Analyses techniques ───────────────────────────────────────────────────────
 anrj_info  = analyze_ticker(DATA, LIVE, "ANRJ.PA")
 aasi_info  = analyze_ticker(DATA, LIVE, "AASI.PA")
 proxies_a  = {tk: analyze_ticker(DATA, LIVE, tk) for tk in PROXIES_ANRJ}
 proxies_em = {tk: analyze_ticker(DATA, LIVE, tk) for tk in PROXIES_AASI}
 
-# ── Décisions ─────────────────────────────────────────────────────────────────
 h_msg, h_col = evaluate_hydrogen(anrj_info)
 a_msg, a_col = evaluate_em_asia(aasi_info)
 s_msg, s_col, sent_rows = evaluate_sentinelles(DATA, LIVE)
@@ -684,15 +757,14 @@ decision_globale, decision_color = decision_finale(h_col, a_col, s_col, h_msg, a
 phase_text, phase_color = determine_phase(gap, anrj_info, aasi_info, proxies_a, proxies_em)
 arbitrage_actions = compute_arbitrage(positions_calculees, valeur_totale, anrj_info, aasi_info)
 
-# ── Flash Macro ───────────────────────────────────────────────────────────────
 macro_info = {}
 for sym in MACRO_TICKERS:
     lp = LIVE.get(sym, {})
-    prix = lp.get("prix")
-    prev = lp.get("prev")
-    macro_info[sym] = {"prix": prix, "prev": prev} if prix else None
+    prix_m = lp.get("prix")
+    prev_m = lp.get("prev")
+    macro_info[sym] = {"prix": prix_m, "prev": prev_m} if prix_m else None
 
-now = datetime.now(ZoneInfo("Europe/Paris"))
+now        = datetime.now(ZoneInfo("Europe/Paris"))
 live_ok    = sum(1 for v in LIVE.values() if v.get("prix"))
 live_total = len(LIVE)
 
@@ -700,7 +772,7 @@ live_total = len(LIVE)
 # ██████╗  BLOC 10 : HEADER
 # =============================================================================
 
-st.title("🛰️ Cockpit Décisionnel v3.3")
+st.title("🛰️ Cockpit Décisionnel v3.4")
 col_hd1, col_hd2 = st.columns([3, 1])
 with col_hd1:
     st.caption(
@@ -708,12 +780,21 @@ with col_hd1:
         f"Cache live 30s · Technique 90s"
     )
 with col_hd2:
-    live_pct = live_ok / live_total * 100 if live_total else 0
+    live_pct    = live_ok / live_total * 100 if live_total else 0
     color_badge = "#22C55E" if live_pct >= 80 else "#F97316" if live_pct >= 50 else "#EF4444"
     st.markdown(
         f'<div style="text-align:right; padding-top:0.2rem;">'
         f'<span class="badge" style="background:{color_badge};color:{"#0B0E15" if live_pct>=80 else "white"};">'
         f'📡 {live_ok}/{live_total} LIVE</span></div>',
+        unsafe_allow_html=True
+    )
+
+# ── ★ v3.4 : Bandeau Mode Direct ──────────────────────────────────────────────
+if mode_direct:
+    st.markdown(
+        '<div class="mode-direct-banner">'
+        '🔌 MODE DIRECT ACTIF — Vue Brute (ajustement_pat = 0 · bonus = 0 · PRM PEA non ajusté)'
+        '</div>',
         unsafe_allow_html=True
     )
 
@@ -724,7 +805,7 @@ st.markdown(
 )
 
 # =============================================================================
-# ██████╗  BLOC 11 : SECTION 1 — COMMAND CENTER ★ v3.2
+# ██████╗  BLOC 11 : SECTION 1 — COMMAND CENTER  ★ v3.4
 # =============================================================================
 
 st.markdown("## 🚀 Command Center")
@@ -736,17 +817,18 @@ def sign_str(v):
 
 c1, c2, c3, c4 = st.columns(4)
 
-# ── KPI 1 : Solde Total Portefeuille (titres + ajustement) ───────────────────
+# ── KPI 1 : Solde Total Portefeuille ─────────────────────────────────────────
 with c1:
-    st.markdown('<div class="card card-accent">', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="kpi-label">Solde Total Portefeuille'
-        '<span class="live-badge">LIVE</span>'
-        '<span class="adj-badge">+ADJ</span></div>',
-        unsafe_allow_html=True
-    )
+    card_cls = "card card-accent" if not mode_direct else "card card-brut"
+    st.markdown(f'<div class="{card_cls}">', unsafe_allow_html=True)
+    if mode_direct:
+        label_extra = '<span class="live-badge">LIVE</span><span class="brut-badge">BRUT</span>'
+        label_title = "Valeur Titres (Brute)"
+    else:
+        label_extra = '<span class="live-badge">LIVE</span><span class="adj-badge">+ADJ</span>'
+        label_title = "Solde Total Portefeuille"
+    st.markdown(f'<div class="kpi-label">{label_title}{label_extra}</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="kpi-value">{solde_total:,.2f}€</div>', unsafe_allow_html=True)
-    # Variation du jour calculée sur les titres seulement (l'ajustement est fixe)
     clr = "pos" if ptf["perf_j_eur"] >= 0 else "neg"
     st.markdown(
         f'<div class="kpi-delta-{clr}">'
@@ -754,37 +836,54 @@ with c1:
         f'({sign_str(ptf["perf_j_pct"])}{ptf["perf_j_pct"]:.2f}%) vs clôture veille</div>',
         unsafe_allow_html=True
     )
-    # Détail de décomposition
-    st.markdown(
-        f'<div class="small" style="margin-top:0.4rem;">'
-        f'Titres : {valeur_totale:,.2f}€ · Ajust. : +{ptf["ajustement_pat"]:,.2f}€</div>',
-        unsafe_allow_html=True
-    )
+    if not mode_direct:
+        st.markdown(
+            f'<div class="small" style="margin-top:0.4rem;">'
+            f'Titres : {valeur_totale:,.2f}€ · Ajust. : +{ptf["ajustement_pat"]:,.2f}€</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            '<div class="small" style="margin-top:0.4rem;color:#C084FC;">'
+            'Ajustements désactivés — valeur marchande pure</div>',
+            unsafe_allow_html=True
+        )
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ── KPI 2 : Gain Réel Patrimonial ────────────────────────────────────────────
+# ── KPI 2 : Gain ─────────────────────────────────────────────────────────────
 with c2:
-    st.markdown('<div class="card card-accent">', unsafe_allow_html=True)
-    st.markdown('<div class="kpi-label">Gain Réel Patrimonial</div>', unsafe_allow_html=True)
+    card_cls = "card card-accent" if not mode_direct else "card card-brut"
+    st.markdown(f'<div class="{card_cls}">', unsafe_allow_html=True)
+    kpi2_label = "Gain Boursier Brut" if mode_direct else "Gain Réel Patrimonial"
+    st.markdown(f'<div class="kpi-label">{kpi2_label}</div>', unsafe_allow_html=True)
     g_clr = "#22C55E" if gain_reel >= 0 else "#EF4444"
     st.markdown(
         f'<div class="kpi-value" style="color:{g_clr};">{sign_str(gain_reel)}{gain_reel:,.2f}€</div>',
         unsafe_allow_html=True
     )
-    st.markdown(
-        f'<div class="small">'
-        f'Capital réel sorti : {ptf["capital_reel"]:,.2f}€<br>'
-        f'<span style="color:#6366F1;font-size:0.75rem;">'
-        f'Bonus {160:.0f}€ + TBC {59.97:.2f}€ inclus</span></div>',
-        unsafe_allow_html=True
-    )
+    if mode_direct:
+        st.markdown(
+            f'<div class="small">'
+            f'Capital référence : {ptf["capital_reel"]:,.2f}€<br>'
+            f'<span style="color:#A855F7;font-size:0.75rem;">Bonus et TBC exclus du calcul</span></div>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            f'<div class="small">'
+            f'Capital réel sorti : {ptf["capital_reel"]:,.2f}€<br>'
+            f'<span style="color:#6366F1;font-size:0.75rem;">'
+            f'Bonus 160€ + TBC 59,97€ inclus</span></div>',
+            unsafe_allow_html=True
+        )
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ── KPI 3 : Performance Totale (sur capital réel) ────────────────────────────
+# ── KPI 3 : Performance ───────────────────────────────────────────────────────
 with c3:
-    st.markdown('<div class="card card-accent">', unsafe_allow_html=True)
+    card_cls = "card card-accent" if not mode_direct else "card card-brut"
+    st.markdown(f'<div class="{card_cls}">', unsafe_allow_html=True)
     st.markdown('<div class="kpi-label">Performance Totale</div>', unsafe_allow_html=True)
-    p = ptf["perf_tot_pct"]
+    p     = ptf["perf_tot_pct"]
     p_clr = "#22C55E" if p >= 0 else "#EF4444"
     st.markdown(f'<div class="kpi-value" style="color:{p_clr};">{sign_str(p)}{p:.2f}%</div>', unsafe_allow_html=True)
     if gap is not None:
@@ -796,7 +895,7 @@ with c3:
         )
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ── KPI 4 : Benchmark MSCI World ─────────────────────────────────────────────
+# ── KPI 4 : Benchmark ────────────────────────────────────────────────────────
 with c4:
     st.markdown('<div class="card card-accent">', unsafe_allow_html=True)
     st.markdown(
@@ -831,25 +930,34 @@ with col_tab:
         vje_f  = f"{sign_str(p['var_jour_eur'])}{p['var_jour_eur']:,.2f}€" if p["var_jour_eur"] else "–"
         prix_f = f"{p['prix']:.3f}€" if p["prix"] else "N/A"
         rows.append({
-            "Position":     p["nom"],
-            "Env.":         p["enveloppe"],
-            "Prix (live)":  prix_f,
-            "Valeur (€)":   f"{p['valeur']:,.2f}",
-            "Perf.":        perf_f,
-            "Var. Jour (%)":vj_f,
-            "Var. Jour (€)":vje_f,
+            "Position":      p["nom"],
+            "Env.":          p["enveloppe"],
+            "Prix (live)":   prix_f,
+            "Valeur (€)":    f"{p['valeur']:,.2f}",
+            "Perf.":         perf_f,
+            "Var. Jour (%)": vj_f,
+            "Var. Jour (€)": vje_f,
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-    # ★ v3.3 — Ligne récapitulative d'ajustement patrimonial
-    st.markdown(
-        f'<div class="info-box" style="margin-top:0.5rem;">'
-        f'<b>Ajustement patrimonial :</b> +{ptf["ajustement_pat"]:,.2f}€ '
-        f'(Bonus Fortuneo 160,00€ + TBC 59,97€) → '
-        f'Solde total = <b>{solde_total:,.2f}€</b></div>',
-        unsafe_allow_html=True
-    )
-    # ★ v3.3 — Diagnostic source Or en temps réel
+    # Récap ajustement / mode direct
+    if mode_direct:
+        st.markdown(
+            '<div class="info-box" style="margin-top:0.5rem;border-left-color:#A855F7;background:#1A0D2E;">'
+            '🔌 <b>Mode Direct actif</b> — Ajustements exclus · '
+            f'Valeur brute titres = <b>{valeur_totale:,.2f}€</b></div>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            f'<div class="info-box" style="margin-top:0.5rem;">'
+            f'<b>Ajustement patrimonial :</b> +{ptf["ajustement_pat"]:,.2f}€ '
+            f'(Bonus Fortuneo 160,00€ + TBC 59,97€) → '
+            f'Solde total = <b>{solde_total:,.2f}€</b></div>',
+            unsafe_allow_html=True
+        )
+
+    # Diagnostic source Or
     or_pos = next((p for p in positions_calculees if p["nom"] == "Or Physique"), None)
     if or_pos and or_pos.get("ticker"):
         or_ticker = or_pos["ticker"]
@@ -880,8 +988,7 @@ with col_pie:
         fig = go.Figure(go.Pie(
             labels=[d["nom"] for d in donut_data],
             values=[d["valeur"] for d in donut_data],
-            hole=0.55,
-            textinfo="percent",
+            hole=0.55, textinfo="percent",
             marker=dict(colors=colors[:len(donut_data)], line=dict(color="#0B0E15", width=2)),
         ))
         fig.update_layout(
@@ -925,7 +1032,7 @@ def render_satellite(title, info, msg, col, proxies):
     st.markdown("**Proxies associés**")
     for tk, prx in proxies.items():
         if prx:
-            icon = "🔴" if (prx["sma20"] and prx["prix"] < prx["sma20"]) else "🟢"
+            icon    = "🔴" if (prx["sma20"] and prx["prix"] < prx["sma20"]) else "🟢"
             sma_txt = f"SMA20 {prx['sma20']:.2f}" if prx["sma20"] else ""
             rsi_txt = f"RSI {prx['rsi']:.0f}" if prx["rsi"] else ""
             st.markdown(f"{icon} **{tk}** — {prx['prix']:.2f} | {sma_txt} | {rsi_txt}")
@@ -999,8 +1106,8 @@ with col_sent:
 with col_macro:
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.markdown("### 🌍 Flash Macro <span class='live-badge'>LIVE</span>", unsafe_allow_html=True)
-    FMT = {"NQ=F": ".2f", "ES=F": ".2f", "^TNX": ".3f", "EURUSD=X": ".4f", "BZ=F": ".2f", "GC=F": ".2f"}
-    SFX = {"^TNX": "%", "BZ=F": "$", "GC=F": "$", "NQ=F": "", "ES=F": "", "EURUSD=X": ""}
+    FMT = {"NQ=F":".2f","ES=F":".2f","^TNX":".3f","EURUSD=X":".4f","BZ=F":".2f","GC=F":".2f"}
+    SFX = {"^TNX":"%","BZ=F":"$","GC=F":"$","NQ=F":"","ES=F":"","EURUSD=X":""}
     for sym, label in MACRO_TICKERS.items():
         info = macro_info.get(sym)
         if info and info.get("prix"):
@@ -1010,9 +1117,7 @@ with col_macro:
                 f'{sign_str((p_val-prev)/prev*100)}{(p_val-prev)/prev*100:.2f}%'
                 if prev and prev != 0 else None
             )
-            fmt = FMT.get(sym, ".2f")
-            sfx = SFX.get(sym, "")
-            st.metric(label, f"{p_val:{fmt}}{sfx}", delta=delta)
+            st.metric(label, f"{p_val:{FMT.get(sym,'.2f')}}{SFX.get(sym,'')}", delta=delta)
         else:
             st.metric(label, "N/A")
     st.markdown('</div>', unsafe_allow_html=True)
@@ -1054,16 +1159,16 @@ sc1, sc2 = st.columns([2, 1])
 with sc2:
     env_sim = st.selectbox("Enveloppe", ["AV", "PEA"])
 with sc1:
-    max_val = float(max(val_env.get(env_sim, 0), 1000))
+    max_val     = float(max(val_env.get(env_sim, 0), 1000))
     montant_sim = st.slider("Montant à retirer (€)", 0.0, max_val, min(1000.0, max_val), step=100.0)
 
 net_sim, avert_sim = net_apres_impots(env_sim, montant_sim, val_env.get(env_sim, 0), gain_env.get(env_sim, 0))
 if avert_sim:
     st.warning(avert_sim)
 elif montant_sim > 0:
-    vp = val_env.get(env_sim, 0)
-    gp = gain_env.get(env_sim, 0)
-    ratio = gp / vp if vp else 0
+    vp         = val_env.get(env_sim, 0)
+    gp         = gain_env.get(env_sim, 0)
+    ratio      = gp / vp if vp else 0
     gain_sim   = montant_sim * ratio
     impots_sim = montant_sim - net_sim
     st.markdown(
@@ -1085,10 +1190,11 @@ st.markdown('</div>', unsafe_allow_html=True)
 st.markdown("---")
 col_f1, col_f2 = st.columns([4, 1])
 with col_f1:
+    mode_txt = "🔌 MODE DIRECT (vue brute)" if mode_direct else f"Ajust. pat. {ajustement_pat_input:,.2f}€"
+    config_txt = f"Config : {_CONFIG_PATH}" if os.path.exists(_CONFIG_PATH) else "Config : valeurs par défaut (non sauvegardées)"
     st.caption(
-        "🛰️ Cockpit Décisionnel v3.3 · Prix live via yf.fast_info (30s) · "
-        "Indicateurs techniques via yf.download (90s) · "
-        f"Ajust. patrimonial {ajustement_pat:,.2f}€ · Capital réel {capital_reel:,.2f}€ · "
+        f"🛰️ Cockpit Décisionnel v3.4 · {mode_txt} · "
+        f"Capital réel {capital_reel_input:,.2f}€ · {config_txt} · "
         "Outil personnel — Ne constitue pas un conseil en investissement"
     )
 with col_f2:
