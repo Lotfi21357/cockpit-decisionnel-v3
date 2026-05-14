@@ -1,15 +1,17 @@
 # =============================================================================
-# COCKPIT DÉCISIONNEL BOURSIER v5.2 — "QUANT-SYSTEM AVEC PERSISTANCE"
+# COCKPIT DÉCISIONNEL BOURSIER v5.3 — "PLATEFORME PÉDAGOGIQUE INSTITUTIONNELLE"
 # Lead Dev: Claude (Anthropic)
-# v4.1 → v5.2 :
-#   • Architecture modulaire stricte — 6 classes (DataManager, PersistenceManager,
-#     MarketRegimeEngine, QuantRiskEngine, PortfolioEngine, StreamlitUI)
-#   • Persistence Layer hybride : SQLite (session) + GitHub Gist CSV (cross-session)
-#   • Market Regime Engine : Score −5/+5, 5 labels, confirmation 3 jours anti-whipsaw
-#   • Quant Risk Engine : Vol roulante, Beta, Drawdown, Corrélation, Risk Contribution
-#   • Portfolio Engine : Score 4 composantes, Dynamic Sizing Matrix, verdict structuré
-#   • UI Premium : Equity Curve, Risk Dashboard, Jauges go.Indicator, Bandeau Régime
-#   Requis dans requirements.txt : streamlit yfinance pandas numpy plotly PyGithub
+# v5.2 → v5.3 :
+#   • PedagogicEngine : Traduction de chaque indicateur en langage humain simple
+#   • StrategicEngine : Score stratégique simplifié 0→5 avec messages actionnables
+#   • Leadership Comparison : Graphique barres 5 semaines Satellite vs World
+#   • Risk Engine pédagogique : Vol/Beta/Drawdown traduits en français accessible
+#   • Sentinelles sectorielles avec alertes visuelles simplifiées
+#   • UI mobile-first améliorée : gros boutons, cartes compactes, alertes visuelles
+#   • Toute la logique v5.2 préservée intégralement (PRM, fiscal, bonus, positions)
+#
+#   Requis dans requirements.txt :
+#     streamlit yfinance pandas numpy plotly PyGithub
 # =============================================================================
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -20,13 +22,13 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import plotly.express as px
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import json, os, sqlite3, io, csv, warnings
 from typing import Optional, Dict, List, Tuple
 warnings.filterwarnings("ignore")
 
-# PyGithub est optionnel — si absent, le mode Live uniquement est activé
 try:
     from github import Github, InputFileContent
     PYGITHUB_OK = True
@@ -34,14 +36,14 @@ except ImportError:
     PYGITHUB_OK = False
 
 st.set_page_config(
-    page_title="Cockpit v5.2 · Quant System",
-    page_icon="🛰️",
+    page_title="Cockpit v5.3 · Pédagogique",
+    page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODULE 1 : CSS — DESIGN SYSTEM INSTITUTIONNEL (DARK MODE)
+# MODULE 1 : CSS — DESIGN SYSTEM INSTITUTIONNEL MOBILE-FIRST (v5.3)
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -53,7 +55,7 @@ section[data-testid="stSidebar"] {
     background-color: #22252E; border-right: 1px solid #2E3340;
 }
 .stApp > header { background-color: #1C1F26; }
-.main .block-container { padding-top: 1.5rem; max-width: 1400px; }
+.main .block-container { padding-top: 1.2rem; max-width: 1400px; }
 
 /* ── Cards ── */
 .card {
@@ -104,17 +106,17 @@ section[data-testid="stSidebar"] {
 .regime-pending    { background:linear-gradient(135deg,#1C1F26,#22252E); color:#6B7585; border:1px dashed #374151; }
 
 /* ── Status Labels ── */
-.status-maintain   { background:linear-gradient(135deg,#2D3F1F,#344A22); color:#86EFAC;
-                     padding:.8rem 1.2rem; border-radius:8px; font-weight:700; font-size:1rem; text-align:center; }
-.status-lighten    { background:linear-gradient(135deg,#3B3208,#453B0A); color:#FDE68A;
-                     padding:.8rem 1.2rem; border-radius:8px; font-weight:700; font-size:1rem; text-align:center; }
-.status-vigilance  { background:linear-gradient(135deg,#3B2008,#47260A); color:#FDBA74;
-                     padding:.8rem 1.2rem; border-radius:8px; font-weight:700; font-size:1rem; text-align:center; }
-.status-reduce     { background:linear-gradient(135deg,#3B0F0F,#4A1414); color:#FCA5A5;
-                     padding:.8rem 1.2rem; border-radius:8px; font-weight:700; font-size:1rem; text-align:center; }
-.status-exit       { background:linear-gradient(135deg,#2D0505,#3A0808); color:#FF3131;
-                     padding:.8rem 1.2rem; border-radius:8px; font-weight:700; font-size:1rem; text-align:center;
-                     box-shadow:0 0 20px rgba(255,49,49,.2); }
+.status-maintain  { background:linear-gradient(135deg,#2D3F1F,#344A22); color:#86EFAC;
+                    padding:.8rem 1.2rem; border-radius:8px; font-weight:700; font-size:1rem; text-align:center; }
+.status-lighten   { background:linear-gradient(135deg,#3B3208,#453B0A); color:#FDE68A;
+                    padding:.8rem 1.2rem; border-radius:8px; font-weight:700; font-size:1rem; text-align:center; }
+.status-vigilance { background:linear-gradient(135deg,#3B2008,#47260A); color:#FDBA74;
+                    padding:.8rem 1.2rem; border-radius:8px; font-weight:700; font-size:1rem; text-align:center; }
+.status-reduce    { background:linear-gradient(135deg,#3B0F0F,#4A1414); color:#FCA5A5;
+                    padding:.8rem 1.2rem; border-radius:8px; font-weight:700; font-size:1rem; text-align:center; }
+.status-exit      { background:linear-gradient(135deg,#2D0505,#3A0808); color:#FF3131;
+                    padding:.8rem 1.2rem; border-radius:8px; font-weight:700; font-size:1rem; text-align:center;
+                    box-shadow:0 0 20px rgba(255,49,49,.2); }
 
 /* ── Arbitrage Blocks ── */
 .arb-sell { background:linear-gradient(135deg,#350808,#420B0B); border:1px solid #FF3131;
@@ -187,11 +189,144 @@ h3, h4 { color:#CBD5E1 !important; font-family:'DM Sans',sans-serif; font-weight
 .alert-critical { background:linear-gradient(135deg,#2D0505,#380909);
     border:1px solid #FF3131; border-radius:10px; padding:.9rem 1.2rem; margin:.5rem 0;
     box-shadow:0 0 20px rgba(255,49,49,.2); color:#FCA5A5; font-weight:600; }
+
+/* ── v5.3 NOUVEAUX STYLES PÉDAGOGIQUES ── */
+
+/* Boîte d'explication pédagogique */
+.pedagogy-box {
+    background: linear-gradient(145deg, #0D1928, #111D30);
+    border: 1px solid #1E3A5F;
+    border-left: 4px solid #3B82F6;
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    margin: .6rem 0;
+    font-size: .88rem;
+    color: #93C5FD;
+    line-height: 1.6;
+}
+.pedagogy-box .pedagogy-title {
+    font-size: .72rem;
+    color: #3B82F6;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-weight: 700;
+    margin-bottom: .4rem;
+}
+.pedagogy-box .pedagogy-scale {
+    display: flex;
+    gap: .5rem;
+    margin-top: .5rem;
+    font-size: .78rem;
+    flex-wrap: wrap;
+}
+.scale-green  { background:rgba(34,197,94,.15);  color:#86EFAC; padding:.2rem .6rem; border-radius:4px; }
+.scale-orange { background:rgba(249,115,22,.15); color:#FDBA74; padding:.2rem .6rem; border-radius:4px; }
+.scale-red    { background:rgba(255,49,49,.15);  color:#FCA5A5; padding:.2rem .6rem; border-radius:4px; }
+
+/* Verdict pédagogique grand format */
+.verdict-card {
+    border-radius: 14px;
+    padding: 1.2rem 1.6rem;
+    margin: .8rem 0;
+    text-align: center;
+    font-weight: 700;
+    font-size: 1.1rem;
+    letter-spacing: .3px;
+}
+.verdict-green  { background:linear-gradient(135deg,#0D2218,#0E2A1C); border:2px solid #22C55E; color:#86EFAC; box-shadow:0 0 20px rgba(34,197,94,.15); }
+.verdict-orange { background:linear-gradient(135deg,#2A1800,#331F00); border:2px solid #F97316; color:#FDBA74; box-shadow:0 0 20px rgba(249,115,22,.15); }
+.verdict-red    { background:linear-gradient(135deg,#2D0808,#380B0B); border:2px solid #FF3131; color:#FCA5A5; box-shadow:0 0 20px rgba(255,49,49,.2); }
+
+/* Score simple 0-5 */
+.simple-score-ring {
+    width: 80px; height: 80px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Space Mono', monospace;
+    font-size: 1.8rem; font-weight: 700;
+    margin: 0 auto;
+}
+.ring-5 { border: 4px solid #22C55E; color:#22C55E; background:rgba(34,197,94,.1); }
+.ring-4 { border: 4px solid #86EFAC; color:#86EFAC; background:rgba(134,239,172,.08); }
+.ring-3 { border: 4px solid #D4AF37; color:#D4AF37; background:rgba(212,175,55,.08); }
+.ring-2 { border: 4px solid #F97316; color:#F97316; background:rgba(249,115,22,.08); }
+.ring-1 { border: 4px solid #EF4444; color:#EF4444; background:rgba(239,68,68,.08); }
+.ring-0 { border: 4px solid #FF3131; color:#FF3131; background:rgba(255,49,49,.08); }
+
+/* Metric pédagogique */
+.pedago-metric {
+    background: #252932;
+    border-radius: 10px;
+    padding: 1rem;
+    margin: .4rem 0;
+    border: 1px solid #32363F;
+}
+.pedago-metric-title {
+    font-size: .7rem;
+    color: #6B7585;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    margin-bottom: .3rem;
+}
+.pedago-metric-value {
+    font-size: 1.6rem;
+    font-weight: 700;
+    font-family: 'Space Mono', monospace;
+    margin-bottom: .2rem;
+}
+.pedago-metric-explain {
+    font-size: .82rem;
+    color: #8892AA;
+    line-height: 1.5;
+    margin-top: .3rem;
+}
+
+/* Leadership weekly bars */
+.leadership-header {
+    background: linear-gradient(135deg, #1A1F26, #1E2530);
+    border: 1px solid #2E3340;
+    border-top: 3px solid #D4AF37;
+    border-radius: 12px;
+    padding: 1rem 1.4rem;
+    margin-bottom: 1rem;
+}
+.leadership-verdict {
+    border-radius: 10px;
+    padding: .9rem 1.4rem;
+    margin-top: .8rem;
+    font-size: 1rem;
+    font-weight: 700;
+    line-height: 1.5;
+}
+
+/* Mobile optimizations */
+@media (max-width: 768px) {
+    .kpi-value { font-size: 1.5rem; }
+    .score-badge { font-size: 1.8rem; padding: .3rem .8rem; }
+    .main .block-container { padding-top: .8rem; padding-left: .5rem; padding-right: .5rem; }
+    .card { padding: 1rem; }
+    .verdict-card { font-size: .95rem; }
+    .stButton button { min-height: 48px !important; font-size: 1rem !important; }
+}
+
+/* Boutons premium mobile */
+.stButton > button {
+    border-radius: 10px !important;
+    font-weight: 700 !important;
+    letter-spacing: .5px !important;
+    transition: all .2s ease !important;
+}
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #D4AF37, #B8952A) !important;
+    border: none !important;
+    color: #0B0E15 !important;
+    box-shadow: 0 4px 15px rgba(212,175,55,.3) !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODULE 2 : CONSTANTES & CONFIGURATION (Préservées intégralement de v4.1)
+# MODULE 2 : CONSTANTES & CONFIGURATION (Préservées intégralement de v4.1/v5.2)
 # ─────────────────────────────────────────────────────────────────────────────
 
 POSITIONS_BASE: List[Dict] = [
@@ -208,7 +343,6 @@ _DEFAULT_BONUS_FORTUNEO = 160.0
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_perso.json")
 _DB_PATH     = os.path.join(os.path.dirname(os.path.abspath(__file__)), "local.db")
 
-# Cibles initiales satellites (v4.1)
 INITIAL_TARGETS: Dict[str, float] = {
     "Global Hydrogen": 0.25,
     "EM Asia":         0.25,
@@ -230,9 +364,9 @@ MACRO_TICKERS: Dict[str, str] = {
     "MCHI":     "iShares MSCI China",
 }
 
-# Tickers supplémentaires pour le Regime Engine
 REGIME_TICKERS = ["SPY", "QQQ", "^VIX", "^TNX", "DX-Y.NYB", "ES=F", "NQ=F"]
 
+# v5.3 : Sentinelles enrichies avec secteur Hydrogène ET EM Asia
 SENTINELLES: Dict[str, List[str]] = {
     "TSMC":        ["TSM"],
     "Samsung":     ["005930.KS"],
@@ -241,14 +375,17 @@ SENTINELLES: Dict[str, List[str]] = {
     "SK Hynix":    ["000660.KS"],
 }
 
+# Secteurs pour alertes pédagogiques v5.3
+SENTINELLES_HYDROGEN = ["Air Liquide", "Bloom Energy"]
+SENTINELLES_EM_ASIA  = ["TSMC", "Samsung", "SK Hynix"]
+
 DATE_DEBUT = datetime(2025, 9, 17)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODULE 3 : FONCTIONS CACHÉES (module-level — obligatoire pour @st.cache_data)
+# MODULE 3 : FONCTIONS CACHÉES (inchangées v5.2)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalise un DataFrame yfinance : supprime MultiIndex, ffill, valide 'Close'."""
     if df is None or df.empty:
         return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):
@@ -272,7 +409,6 @@ def _normalize_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _fetch_live_price(tk: str) -> Tuple[Optional[float], Optional[float]]:
-    """Retourne (prix_live, prev_close) pour un ticker."""
     try:
         fi   = yf.Ticker(tk).fast_info
         prix = getattr(fi, "last_price", None)
@@ -294,7 +430,6 @@ def _fetch_live_price(tk: str) -> Tuple[Optional[float], Optional[float]]:
 
 @st.cache_data(ttl=30, show_spinner=False)
 def _cached_live_prices() -> Dict[str, Dict]:
-    """Charge tous les prix live (cache 30s)."""
     all_tickers = []
     for pos in POSITIONS_BASE:
         all_tickers.extend(pos["tickers"])
@@ -314,7 +449,6 @@ def _cached_live_prices() -> Dict[str, Dict]:
 
 @st.cache_data(ttl=90, show_spinner=False)
 def _cached_historical_data() -> Dict[str, pd.DataFrame]:
-    """Charge 600j d'historique pour tous les tickers (cache 90s)."""
     start = (datetime.now() - timedelta(days=600)).strftime("%Y-%m-%d")
     all_tickers = []
     for pos in POSITIONS_BASE:
@@ -346,7 +480,6 @@ def _cached_historical_data() -> Dict[str, pd.DataFrame]:
         if not df.empty:
             result[all_tickers[0]] = df
 
-    # Fallback individuel pour les tickers manquants
     for tk in [t for t in all_tickers if t not in result]:
         try:
             df = _normalize_df(yf.download(tk, start=start, auto_adjust=True, progress=False))
@@ -383,25 +516,18 @@ def _save_config(capital_reel: float, ajustement_pat: float, bonus_fortuneo: flo
         return False
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODULE 4 : PERSISTENCE MANAGER (SQLite local + GitHub Gist CSV)
+# MODULE 4 : PERSISTENCE MANAGER (inchangé v5.2)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Colonnes du CSV persistant
 _CSV_COLS = ["date", "capital_cloture", "valeur_titres",
              "perf_jour", "perf_cumul", "regime", "score_regime",
              "poids_h", "poids_em"]
 
 class PersistenceManager:
     """
-    Gestion de la persistance hybride :
-    - SQLite  : cache de session rapide (local.db)
-    - GitHub Gist : stockage cross-session (history.csv)
-
-    Configuration dans st.secrets :
-        GITHUB_TOKEN = "ghp_xxxx"
-        GIST_ID      = "abc123def456" (Gist contenant history.csv)
-
-    Fallback silencieux si token absent ou réseau défaillant.
+    Gestion hybride : SQLite (session) + GitHub Gist CSV (cross-session).
+    PRIORITÉ ABSOLUE : ne jamais repartir du capital initial.
+    Chaque jour, la base de calcul = clôture du jour précédent.
     """
 
     def __init__(self, static_capital: float):
@@ -411,16 +537,13 @@ class PersistenceManager:
         self._github_warning = ""
         self._history_cache: Optional[pd.DataFrame] = None
 
-        # ── Initialisation SQLite ──────────────────────────────────────────
         try:
             self._conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
             self._init_db()
-        except Exception as e:
-            # Fallback in-memory
+        except Exception:
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._init_db()
 
-        # ── Initialisation GitHub ──────────────────────────────────────────
         if PYGITHUB_OK:
             try:
                 token   = st.secrets.get("GITHUB_TOKEN", "")
@@ -429,7 +552,6 @@ class PersistenceManager:
                     gh          = Github(token)
                     self._gist  = gh.get_gist(gist_id)
                     self._github_ok = True
-                    # Télécharger l'historique au démarrage
                     self._sync_from_github()
             except Exception as e:
                 self._github_warning = f"GitHub Gist indisponible : {str(e)[:80]}"
@@ -437,7 +559,6 @@ class PersistenceManager:
             self._github_warning = "PyGithub non installé — mode SQLite uniquement."
 
     def _init_db(self):
-        """Crée la table SQLite si elle n'existe pas."""
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS snapshots (
                 date            TEXT PRIMARY KEY,
@@ -455,7 +576,6 @@ class PersistenceManager:
         self._conn.commit()
 
     def _sync_from_github(self):
-        """Télécharge history.csv depuis le Gist et peuple SQLite."""
         if not self._gist:
             return
         try:
@@ -488,26 +608,18 @@ class PersistenceManager:
             pass
 
     def _push_to_github(self, df: pd.DataFrame):
-        """Pousse le DataFrame historique complet en CSV sur le Gist."""
         if not self._gist:
             return
         try:
             buf  = io.StringIO()
             df.to_csv(buf, index=False, columns=_CSV_COLS)
-            csv_content = buf.getvalue()
-            self._gist.edit(files={"history.csv": InputFileContent(csv_content)})
+            self._gist.edit(files={"history.csv": InputFileContent(buf.getvalue())})
         except Exception:
-            pass  # Échec silencieux — la session locale continue
+            pass
 
     def save_snapshot(self, capital_cloture: float, valeur_titres: float,
                       perf_jour: float, perf_cumul: float, regime: str,
                       score_regime: int, poids_h: float, poids_em: float) -> bool:
-        """
-        Sauvegarde un snapshot :
-        1. Écrit dans SQLite
-        2. Pousse asynchronement vers GitHub Gist
-        Retourne True si SQLite ok (GitHub est best-effort).
-        """
         today = datetime.now(ZoneInfo("Europe/Paris")).strftime("%Y-%m-%d")
         try:
             self._conn.execute("""
@@ -519,8 +631,7 @@ class PersistenceManager:
                   round(perf_jour, 4), round(perf_cumul, 4), regime,
                   score_regime, round(poids_h, 4), round(poids_em, 4)))
             self._conn.commit()
-            self._history_cache = None  # invalide le cache
-            # Push GitHub (best-effort)
+            self._history_cache = None
             if self._github_ok:
                 self._push_to_github(self.load_history())
             return True
@@ -528,12 +639,10 @@ class PersistenceManager:
             return False
 
     def load_history(self) -> pd.DataFrame:
-        """Retourne l'historique complet sous forme de DataFrame (colonnes = _CSV_COLS)."""
         if self._history_cache is not None:
             return self._history_cache
         try:
             df = pd.read_sql("SELECT * FROM snapshots ORDER BY date ASC", self._conn)
-            # S'assurer que toutes les colonnes sont présentes
             for col in _CSV_COLS:
                 if col not in df.columns:
                     df[col] = None
@@ -543,7 +652,6 @@ class PersistenceManager:
             return pd.DataFrame(columns=_CSV_COLS)
 
     def get_last_snapshot(self) -> Optional[Dict]:
-        """Retourne le dernier snapshot ou None si historique vide."""
         hist = self.load_history()
         if hist.empty:
             return None
@@ -551,23 +659,12 @@ class PersistenceManager:
         return {c: row[c] for c in _CSV_COLS}
 
     def get_initial_capital(self) -> float:
-        """
-        Capital de base pour le calcul de performance cumulée :
-        - Premier snapshot disponible (chaînage)
-        - Sinon, capital statique configuré
-        """
         hist = self.load_history()
         if not hist.empty and hist["capital_cloture"].notna().any():
             return float(hist["capital_cloture"].dropna().iloc[0])
         return self.static_capital
 
     def compute_daily_performance(self, current_value: float) -> Tuple[float, float, float]:
-        """
-        Retourne (perf_jour_pct, perf_cumul_pct, base_capital_hier).
-        - perf_jour  = (current / dernier_snapshot) - 1
-        - perf_cumul = (current / premier_snapshot) - 1
-        Ne recalcule JAMAIS depuis le capital de départ fixe.
-        """
         last    = self.get_last_snapshot()
         initial = self.get_initial_capital()
         base    = float(last["capital_cloture"]) if last else self.static_capital
@@ -579,7 +676,6 @@ class PersistenceManager:
 
     @property
     def status(self) -> str:
-        """Statut du layer de persistance pour l'affichage UI."""
         if self._github_ok:
             return "github"
         if self._github_warning:
@@ -591,24 +687,16 @@ class PersistenceManager:
         return self._github_warning
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODULE 5 : DATA MANAGER
+# MODULE 5 : DATA MANAGER (inchangé v5.2)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class DataManager:
-    """
-    Gère l'accès aux données de marché :
-    - Prix live (fast_info → info fallback)
-    - Historique 600j (yfinance bulk download)
-    - Log returns (obligatoire pour tous les calculs de risque)
-    """
-
     def __init__(self):
         self.live: Dict[str, Dict]         = _cached_live_prices()
         self.data: Dict[str, pd.DataFrame] = _cached_historical_data()
         self._log_returns_cache: Optional[Dict[str, pd.Series]] = None
 
     def get_price_info(self, tickers: List[str]) -> Tuple[Optional[float], Optional[float], Optional[str]]:
-        """Retourne (prix, prev_close, ticker_utilisé) pour une liste de tickers fallback."""
         for tk in tickers:
             info = self.live.get(tk, {})
             prix = info.get("prix")
@@ -618,11 +706,6 @@ class DataManager:
         return None, None, None
 
     def compute_log_returns(self) -> Dict[str, pd.Series]:
-        """
-        Calcule les rendements logarithmiques journaliers pour tous les actifs.
-        Formula : ln(P_t / P_{t-1})
-        Obligatoire pour tous les calculs de risque ultérieurs.
-        """
         if self._log_returns_cache is not None:
             return self._log_returns_cache
         result = {}
@@ -695,7 +778,6 @@ class DataManager:
         }
 
     def relative_strength_slope(self, ticker: str, days: int = 14) -> Optional[float]:
-        """Pente de (Actif / MSCI World) sur N jours. >0 = leadership."""
         df_asset = self.data.get(ticker, pd.DataFrame())
         df_world = pd.DataFrame()
         for wt in WORLD_TICKERS:
@@ -716,10 +798,9 @@ class DataManager:
         return float(np.polyfit(x, y, 1)[0]) if not np.any(np.isnan(y)) else None
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODULE 6 : MARKET REGIME ENGINE
+# MODULE 6 : MARKET REGIME ENGINE (inchangé v5.2)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Mapping score → label
 _REGIME_LABELS = [
     (4,  5,  "Euphorie",    "regime-euphorie",    "#A855F7"),
     (2,  3,  "Expansion",   "regime-expansion",   "#22C55E"),
@@ -728,7 +809,6 @@ _REGIME_LABELS = [
     (-5,-4,  "Contraction", "regime-contraction", "#FF3131"),
 ]
 
-# Multiplicateurs régime pour le sizing dynamique
 REGIME_MULTIPLIERS = {
     "Euphorie":    1.00,
     "Expansion":   1.00,
@@ -738,31 +818,14 @@ REGIME_MULTIPLIERS = {
 }
 
 class MarketRegimeEngine:
-    """
-    Calcule le régime de marché global via 5 indicateurs macro :
-    Score −5 → +5 sur 5 composantes (chacune ±1) :
-      +1 Trend     : ES=F (ou SPY) > SMA200
-      +1 Breadth   : QQQ (ou NQ=F) > SMA50
-      +1 Volatility: ^VIX < 20
-      +1 Rates     : ^TNX < SMA20
-      +1 Liquidity : DX-Y.NYB < SMA50
-
-    Anti-whipsaw : le régime est "confirmé" seulement si les 3 derniers
-    jours glissants donnent le même label.
-    """
-
     def __init__(self, dm: DataManager):
         self.dm = dm
 
     def _compute_score_at(self, offset: int = 0) -> int:
-        """
-        Calcule le score régime à un offset de jours dans le passé.
-        offset=0 → aujourd'hui, offset=1 → hier, etc.
-        """
         score = 0
         data  = self.dm.data
 
-        def _get_close(tickers: List[str]) -> Optional[pd.Series]:
+        def _get_close(tickers):
             for tk in tickers:
                 df = data.get(tk, pd.DataFrame())
                 if not df.empty and "Close" in df.columns:
@@ -771,27 +834,22 @@ class MarketRegimeEngine:
                         return cl.iloc[:len(cl) - offset] if offset > 0 else cl
             return None
 
-        # ── 1. Trend : S&P 500 > SMA200 ──────────────────────────────────────
         cl = _get_close(["ES=F", "SPY"])
         if cl is not None and len(cl) >= 201:
             score += 1 if float(cl.iloc[-1]) > float(cl.rolling(200).mean().iloc[-1]) else -1
 
-        # ── 2. Breadth : Nasdaq > SMA50 ───────────────────────────────────────
         cl = _get_close(["QQQ", "NQ=F"])
         if cl is not None and len(cl) >= 51:
             score += 1 if float(cl.iloc[-1]) > float(cl.rolling(50).mean().iloc[-1]) else -1
 
-        # ── 3. Volatility : VIX < 20 ─────────────────────────────────────────
         cl = _get_close(["^VIX"])
         if cl is not None:
             score += 1 if float(cl.iloc[-1]) < 20 else -1
 
-        # ── 4. Rates : US10Y < SMA20 ──────────────────────────────────────────
         cl = _get_close(["^TNX"])
         if cl is not None and len(cl) >= 21:
             score += 1 if float(cl.iloc[-1]) < float(cl.rolling(20).mean().iloc[-1]) else -1
 
-        # ── 5. Liquidity : DXY < SMA50 ────────────────────────────────────────
         cl = _get_close(["DX-Y.NYB"])
         if cl is not None and len(cl) >= 51:
             score += 1 if float(cl.iloc[-1]) < float(cl.rolling(50).mean().iloc[-1]) else -1
@@ -799,17 +857,12 @@ class MarketRegimeEngine:
         return max(-5, min(5, score))
 
     def _score_to_label(self, score: int) -> Tuple[str, str, str]:
-        """(label, css_class, hex_color)"""
         for lo, hi, label, css, color in _REGIME_LABELS:
             if lo <= score <= hi:
                 return label, css, color
         return "Neutre", "regime-neutre", "#3B82F6"
 
     def get_full_regime(self) -> Dict:
-        """
-        Calcule le régime avec confirmation 3 jours (anti-whipsaw).
-        Retourne un dict complet pour l'UI et les engines.
-        """
         scores_3d = []
         for offset in range(3):
             try:
@@ -822,27 +875,14 @@ class MarketRegimeEngine:
         labels_3d = [self._score_to_label(s)[0] for s in scores_3d]
 
         if len(set(labels_3d)) == 1:
-            confirmed      = True
-            conf_label     = label_0
-            conf_css       = css_0
-            conf_color     = color_0
-            conf_score     = current_score
+            confirmed  = True; conf_label = label_0; conf_css = css_0
+            conf_color = color_0; conf_score = current_score
         elif labels_3d[0] == labels_3d[1]:
-            # 2/3 confirmé
-            confirmed  = True
-            conf_label = label_0
-            conf_css   = css_0
-            conf_color = color_0
-            conf_score = current_score
+            confirmed  = True; conf_label = label_0; conf_css = css_0
+            conf_color = color_0; conf_score = current_score
         else:
-            confirmed  = False
-            conf_label = "En attente"
-            conf_css   = "regime-pending"
-            conf_color = "#6B7585"
-            conf_score = current_score
-
-        # Détail des 5 composantes
-        components = self._get_component_details()
+            confirmed  = False; conf_label = "En attente"; conf_css = "regime-pending"
+            conf_color = "#6B7585"; conf_score = current_score
 
         return {
             "current_score":   current_score,
@@ -853,16 +893,15 @@ class MarketRegimeEngine:
             "is_confirmed":    confirmed,
             "scores_3d":       scores_3d,
             "labels_3d":       labels_3d,
-            "components":      components,
+            "components":      self._get_component_details(),
             "multiplier":      REGIME_MULTIPLIERS.get(conf_label, 0.85),
         }
 
     def _get_component_details(self) -> List[Dict]:
-        """Retourne le détail des 5 composantes pour l'affichage."""
         data   = self.dm.data
         detail = []
 
-        def _last(tks): 
+        def _last(tks):
             for tk in tks:
                 df = data.get(tk, pd.DataFrame())
                 if not df.empty and "Close" in df.columns:
@@ -870,25 +909,20 @@ class MarketRegimeEngine:
                     if not cl.empty: return cl
             return None
 
-        # Trend
         cl = _last(["ES=F", "SPY"])
         if cl is not None and len(cl) >= 201:
-            sma = float(cl.rolling(200).mean().iloc[-1])
-            v   = float(cl.iloc[-1])
-            detail.append({"name": "Trend (SMA200)",    "bull": v > sma,  "val": f"{v:.1f} vs {sma:.1f}"})
+            sma = float(cl.rolling(200).mean().iloc[-1]); v = float(cl.iloc[-1])
+            detail.append({"name": "Trend (SMA200)",    "bull": v > sma, "val": f"{v:.1f} vs {sma:.1f}"})
         else:
             detail.append({"name": "Trend (SMA200)",    "bull": None, "val": "N/A"})
 
-        # Breadth
         cl = _last(["QQQ", "NQ=F"])
         if cl is not None and len(cl) >= 51:
-            sma = float(cl.rolling(50).mean().iloc[-1])
-            v   = float(cl.iloc[-1])
-            detail.append({"name": "Breadth (SMA50)",   "bull": v > sma,  "val": f"{v:.1f} vs {sma:.1f}"})
+            sma = float(cl.rolling(50).mean().iloc[-1]); v = float(cl.iloc[-1])
+            detail.append({"name": "Breadth (SMA50)",   "bull": v > sma, "val": f"{v:.1f} vs {sma:.1f}"})
         else:
             detail.append({"name": "Breadth (SMA50)",   "bull": None, "val": "N/A"})
 
-        # VIX
         cl = _last(["^VIX"])
         if cl is not None:
             v = float(cl.iloc[-1])
@@ -896,20 +930,16 @@ class MarketRegimeEngine:
         else:
             detail.append({"name": "Volatilité (VIX)",  "bull": None, "val": "N/A"})
 
-        # Rates
         cl = _last(["^TNX"])
         if cl is not None and len(cl) >= 21:
-            sma = float(cl.rolling(20).mean().iloc[-1])
-            v   = float(cl.iloc[-1])
+            sma = float(cl.rolling(20).mean().iloc[-1]); v = float(cl.iloc[-1])
             detail.append({"name": "Taux (US10Y SMA20)","bull": v < sma, "val": f"{v:.3f}% vs {sma:.3f}%"})
         else:
             detail.append({"name": "Taux (US10Y SMA20)","bull": None, "val": "N/A"})
 
-        # Liquidity
         cl = _last(["DX-Y.NYB"])
         if cl is not None and len(cl) >= 51:
-            sma = float(cl.rolling(50).mean().iloc[-1])
-            v   = float(cl.iloc[-1])
+            sma = float(cl.rolling(50).mean().iloc[-1]); v = float(cl.iloc[-1])
             detail.append({"name": "Liquidité (DXY)",   "bull": v < sma, "val": f"{v:.2f} vs {sma:.2f}"})
         else:
             detail.append({"name": "Liquidité (DXY)",   "bull": None, "val": "N/A"})
@@ -917,26 +947,15 @@ class MarketRegimeEngine:
         return detail
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODULE 7 : QUANT RISK ENGINE
+# MODULE 7 : QUANT RISK ENGINE (inchangé v5.2)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class QuantRiskEngine:
-    """
-    Calculs de risque quantitatifs pour chaque satellite et le portefeuille global :
-    - Volatilité roulante annualisée (30j, log returns)
-    - Beta roulant 60j vs MSCI World
-    - Drawdown courant + Max Drawdown (252j)
-    - Matrice de corrélation Pearson (60j)
-    - Risk Contribution par actif (Risk Parity logic)
-    - Flag si un actif contribue > 40% du risque global
-    """
-
     def __init__(self, dm: DataManager):
-        self.dm          = dm
+        self.dm           = dm
         self._log_returns = dm.compute_log_returns()
 
     def rolling_volatility(self, ticker: str, window: int = 30) -> Optional[float]:
-        """Volatilité annualisée : std(log_returns, 30j) × √252."""
         lr = self._log_returns.get(ticker)
         if lr is None or len(lr) < window:
             return None
@@ -944,11 +963,9 @@ class QuantRiskEngine:
 
     def rolling_beta(self, ticker: str,
                      benchmark: str = "MWRD.PA", window: int = 60) -> Optional[float]:
-        """Beta roulant 60j : Cov(actif, benchmark) / Var(benchmark)."""
         lr_a = self._log_returns.get(ticker)
         lr_b = self._log_returns.get(benchmark)
         if lr_b is None:
-            # Essayer d'autres tickers World
             for wt in WORLD_TICKERS:
                 lr_b = self._log_returns.get(wt)
                 if lr_b is not None:
@@ -965,29 +982,21 @@ class QuantRiskEngine:
         return float(cov / var) if var > 1e-12 else None
 
     def drawdown_metrics(self, ticker: str, window: int = 252) -> Dict:
-        """
-        Retourne current_drawdown et max_drawdown sur la fenêtre (252j par défaut).
-        Drawdown = (prix_actuel / peak_historique) - 1
-        """
         df = self.dm.data.get(ticker, pd.DataFrame())
         if df.empty or "Close" not in df.columns:
             return {"current_dd": None, "max_dd": None}
         close = df["Close"].dropna()
         if len(close) < 10:
             return {"current_dd": None, "max_dd": None}
-        recent  = close.iloc[-window:]
-        peak    = recent.cummax()
-        dd      = (recent / peak - 1)
+        recent = close.iloc[-window:]
+        peak   = recent.cummax()
+        dd     = (recent / peak - 1)
         return {
             "current_dd": float(dd.iloc[-1]) * 100,
             "max_dd":     float(dd.min()) * 100,
         }
 
     def correlation_matrix(self, tickers: List[str], window: int = 60) -> Optional[pd.DataFrame]:
-        """
-        Matrice de corrélation Pearson sur les log returns (60j).
-        Retourne None si données insuffisantes.
-        """
         series_dict = {}
         for tk in tickers:
             lr = self._log_returns.get(tk)
@@ -1004,11 +1013,6 @@ class QuantRiskEngine:
 
     def risk_contribution(self, tickers: List[str], weights: List[float],
                           window: int = 60) -> Dict[str, Dict]:
-        """
-        Calcule la contribution marginale au risque de chaque actif.
-        Basé sur Risk Parity : RC_i = w_i × (Σw)_i / σ_portefeuille
-        Flag si un actif contribue > 40% du risque total.
-        """
         valid_tickers, valid_lr, valid_w = [], [], []
         for tk, w in zip(tickers, weights):
             lr = self._log_returns.get(tk)
@@ -1027,30 +1031,29 @@ class QuantRiskEngine:
             return {}
 
         w  = np.array(valid_w, dtype=float)
-        w /= w.sum()  # normalise à 1
+        w /= w.sum()
 
-        cov    = df_all.cov().values * 252  # annualisé
+        cov    = df_all.cov().values * 252
         port_v = float(w @ cov @ w)
         port_s = np.sqrt(port_v) if port_v > 0 else 1e-10
 
-        mrc        = cov @ w                        # marginal risk contribution
-        rc         = w * mrc                         # risk contribution absolue
-        total_rc   = rc.sum()
-        rc_pct     = rc / total_rc * 100 if total_rc > 0 else rc * 0
+        mrc     = cov @ w
+        rc      = w * mrc
+        total_rc = rc.sum()
+        rc_pct  = rc / total_rc * 100 if total_rc > 0 else rc * 0
 
         result = {}
         for i, tk in enumerate(valid_tickers):
             result[tk] = {
-                "weight_pct":   w[i] * 100,
-                "rc_absolute":  float(rc[i]),
-                "rc_pct":       float(rc_pct[i]),
-                "flag":         float(rc_pct[i]) > 40,
+                "weight_pct": w[i] * 100,
+                "rc_absolute": float(rc[i]),
+                "rc_pct": float(rc_pct[i]),
+                "flag": float(rc_pct[i]) > 40,
             }
         return result
 
     def portfolio_volatility(self, tickers: List[str], weights: List[float],
                              window: int = 60) -> Optional[float]:
-        """Volatilité annualisée du portefeuille pondéré."""
         valid_tickers, valid_lr, valid_w = [], [], []
         for tk, w in zip(tickers, weights):
             lr = self._log_returns.get(tk)
@@ -1070,27 +1073,15 @@ class QuantRiskEngine:
         return float(np.sqrt(w @ cov @ w))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODULE 8 : PORTFOLIO ENGINE (Préservation logique v4.1 + Dynamic Sizing v5.2)
+# MODULE 8 : PORTFOLIO ENGINE (inchangé v5.2)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class PortfolioEngine:
-    """
-    Calculs de portefeuille et décisions d'allocation :
-    - compute_portfolio()         : valorisation live (v4.1 préservée)
-    - compute_benchmark()         : performance vs MSCI World (v4.1 préservée)
-    - compute_unified_score()     : Score 3 couches −4/+4 (v4.1 préservée)
-    - compute_strategic_score_4c(): Score 4 composantes (v5.2)
-    - compute_confidence_factor() : Ajustement par volatilité (v5.2)
-    - compute_target_weight()     : Dynamic Sizing Matrix (v5.2)
-    - compute_strategic_arb()     : Verdict structuré (v4.1+v5.2)
-    """
-
     def __init__(self, dm: DataManager, re: MarketRegimeEngine, qre: QuantRiskEngine):
         self.dm  = dm
         self.re  = re
         self.qre = qre
 
-    # ── CALCUL PORTEFEUILLE (v4.1 préservé intégralement) ──────────────────────
     def compute_portfolio(self, positions_conf: List[Dict],
                            capital_reel: float, ajustement_pat: float,
                            bonus_fortuneo: float) -> Dict:
@@ -1107,12 +1098,12 @@ class PortfolioEngine:
                     "valeur": 0.0, "perf_pct": None, "var_jour_pct": 0.0,
                     "var_jour_eur": 0.0, "enveloppe": env})
                 continue
-            valeur       = pos["parts"] * prix
-            gain_unit    = prix - pos["prm"]
-            perf_pct     = gain_unit / pos["prm"] * 100
-            gain_total   = gain_unit * pos["parts"]
-            var_j_pct    = (prix - prev) / prev * 100 if prev and prev != 0 else 0.0
-            var_j_eur    = (prix - prev) * pos["parts"] if prev else 0.0
+            valeur     = pos["parts"] * prix
+            gain_unit  = prix - pos["prm"]
+            perf_pct   = gain_unit / pos["prm"] * 100
+            gain_total = gain_unit * pos["parts"]
+            var_j_pct  = (prix - prev) / prev * 100 if prev and prev != 0 else 0.0
+            var_j_eur  = (prix - prev) * pos["parts"] if prev else 0.0
             positions_calc.append({
                 "nom": pos["nom"], "ticker": tk_used, "prix": prix,
                 "valeur": valeur, "perf_pct": perf_pct,
@@ -1151,7 +1142,7 @@ class PortfolioEngine:
                 if not df_h.empty: break
         if df_h.empty:
             return {"prix": prix}
-        close    = df_h["Close"].dropna()
+        close = df_h["Close"].dropna()
         try:
             start_val = float(close.loc[DATE_DEBUT.strftime("%Y-%m-%d")])
         except KeyError:
@@ -1163,13 +1154,11 @@ class PortfolioEngine:
         return {"perf_bench": perf_bench, "gap": gap,
                 "prix": prix, "perf_bench_j": perf_bench_j}
 
-    # ── SCORE UNIFIÉ v4.1 (3 couches, −4/+4) ──────────────────────────────────
     def compute_unified_score(self, ticker: str) -> Dict:
         info    = self.dm.analyze_ticker(ticker)
         details = []
         score   = 0
 
-        # Couche 1 : Momentum (RSI)
         rsi_v = info["rsi"] if info else None
         if rsi_v is not None:
             if rsi_v >= 70:   ms, mb, md = -1, "bear", f"RSI={rsi_v:.1f} Tendu"
@@ -1179,7 +1168,6 @@ class PortfolioEngine:
         details.append({"name": "Momentum",   "score": ms, "badge": mb, "desc": md})
         score += ms
 
-        # Couche 2 : Structure (prix vs SMA20)
         if info and info["sma20"] is not None:
             if info["prix"] > info["sma20"]:
                 ss, sb, sd = 1, "bull", f"Prix {info['prix']:.2f} > SMA20 {info['sma20']:.2f}"
@@ -1190,7 +1178,6 @@ class PortfolioEngine:
         details.append({"name": "Structure",  "score": ss, "badge": sb, "desc": sd})
         score += ss
 
-        # Couche 3 : Leadership (pente RS 14j)
         rs_slope = self.dm.relative_strength_slope(ticker, 14)
         if rs_slope is not None:
             if rs_slope > 0: ls, lb, ld = 2, "bull", f"Pente={rs_slope:+.5f} Leader ✓"
@@ -1205,40 +1192,21 @@ class PortfolioEngine:
                 "details": details, "rsi_raw": rsi_v,
                 "adx_raw": info["adx"] if info else None}
 
-    # ── SCORE STRATÉGIQUE 4 COMPOSANTES (v5.2) ─────────────────────────────────
     def compute_strategic_score_4c(self, ticker: str, regime: Dict) -> Dict:
-        """
-        Score stratégique pondéré : −1 → +1
-        • Trend       25% (structure SMA20 normalisée)
-        • Macro/Régime 30% (score régime / 5 normalisé)
-        • Leadership   25% (pente RS normalisée)
-        • Risk/Vol     20% (inverse de la volatilité)
-        """
         info    = self.dm.analyze_ticker(ticker)
-        lr_data = self.dm.compute_log_returns()
 
-        # Trend (25%) : prix vs SMA20 → ±1 normalisé
         trend_raw = 0.0
         if info and info["sma20"] and info["prix"]:
             dev = (info["prix"] - info["sma20"]) / info["sma20"]
-            trend_raw = max(-1.0, min(1.0, dev * 20))  # amplification ×20
+            trend_raw = max(-1.0, min(1.0, dev * 20))
 
-        # Macro/Régime (30%) : score_regime / 5 → ±1
         macro_raw = regime["confirmed_score"] / 5.0
 
-        # Leadership (25%) : pente RS → ±1
         rs = self.dm.relative_strength_slope(ticker, 14)
-        if rs is not None:
-            leader_raw = 1.0 if rs > 0 else -1.0
-        else:
-            leader_raw = 0.0
+        leader_raw = (1.0 if rs and rs > 0 else -1.0 if rs and rs <= 0 else 0.0)
 
-        # Risk/Vol (20%) : vol < 15% = +1, 15-25% = linéaire, > 25% = −1
         vol = self.qre.rolling_volatility(ticker, 30)
-        if vol is not None:
-            vol_raw = max(-1.0, min(1.0, (0.20 - vol) / 0.10))
-        else:
-            vol_raw = 0.0
+        vol_raw = max(-1.0, min(1.0, (0.20 - vol) / 0.10)) if vol is not None else 0.0
 
         total = (trend_raw * 0.25 + macro_raw * 0.30 +
                  leader_raw * 0.25 + vol_raw * 0.20)
@@ -1249,61 +1217,36 @@ class PortfolioEngine:
             "macro":      macro_raw,
             "leadership": leader_raw,
             "risk_vol":   vol_raw,
-            "weights":    {"Trend": 0.25, "Macro/Régime": 0.30,
-                           "Leadership": 0.25, "Risque/Vol": 0.20},
         }
 
-    def compute_confidence_factor(self, tickers: List[str],
-                                   weights: List[float]) -> float:
-        """
-        Facteur de confiance 0.5 → 1.0 basé sur la volatilité globale.
-        Vol < 10%  → 1.0
-        Vol 10-15% → 0.90
-        Vol 15-20% → 0.75
-        Vol > 20%  → 0.60
-        """
+    def compute_confidence_factor(self, tickers: List[str], weights: List[float]) -> float:
         port_vol = self.qre.portfolio_volatility(tickers, weights, 60)
-        if port_vol is None:
-            return 0.85
+        if port_vol is None: return 0.85
         if port_vol < 0.10:   return 1.00
         elif port_vol < 0.15: return 0.90
         elif port_vol < 0.20: return 0.75
         else:                  return 0.60
 
-    # ── DYNAMIC SIZING MATRIX (v5.2) ───────────────────────────────────────────
     def compute_target_weight(self, nom: str, ticker: str,
                                valeur_totale: float,
                                positions_calc: List[Dict]) -> Dict:
-        """
-        Target_Weight = Base_Weight × Régime_Multiplier × Confidence_Factor × (1 + adj)
-        Clamp : [2%, 35%]
-        Produit le verdict : Poids Actuel | Poids Cible | Action | Δ%
-        """
         regime  = self.re.get_full_regime()
         unified = self.compute_unified_score(ticker)
         strat4c = self.compute_strategic_score_4c(ticker, regime)
 
-        # Base weight (logique v4.1)
         base_w = self._get_base_weight(unified["total"], INITIAL_TARGETS.get(nom, 0.25))
 
-        # Multiplicateurs
         regime_mult = regime["multiplier"]
-        tickers_all = [pos["tickers"][0] for pos in POSITIONS_BASE if pos.get("valeur", 0) > 0]
-        weights_all = [pos["valeur"] / valeur_totale for pos in positions_calc
-                       if pos["valeur"] > 0 and pos.get("ticker")]
-        # Confidence
         ptf_tickers = [p["ticker"] for p in positions_calc if p.get("ticker")]
         ptf_weights = [p["valeur"] / valeur_totale for p in positions_calc
                        if p.get("ticker") and valeur_totale > 0]
         confidence  = self.compute_confidence_factor(ptf_tickers, ptf_weights)
 
-        # Ajustement score stratégique (±30%)
         strat_adj = 1.0 + strat4c["total"] * 0.30
 
         target = base_w * regime_mult * confidence * strat_adj
         target = max(0.02, min(0.35, target))
 
-        # Poids actuel
         current_val = next((p["valeur"] for p in positions_calc if p["nom"] == nom), 0.0)
         current_pct = current_val / valeur_totale * 100 if valeur_totale > 0 else 0.0
         target_pct  = target * 100
@@ -1333,13 +1276,11 @@ class PortfolioEngine:
         }
 
     def _get_base_weight(self, score: int, initial_target: float) -> float:
-        """Matrice de base selon score unifié −4/+4 (v4.1 préservée)."""
-        if score >= 3:   return initial_target
-        elif score >= 1: return 0.20
-        elif score >= -1:return 0.15
-        else:            return 0.05
+        if score >= 3:    return initial_target
+        elif score >= 1:  return 0.20
+        elif score >= -1: return 0.15
+        else:             return 0.05
 
-    # ── RÈGLES DÉCISIONNELLES SATELLITES (v4.1 préservées) ────────────────────
     def evaluate_hydrogen(self, anrj: Optional[Dict]) -> Tuple[str, str]:
         if anrj is None:
             return "⚠️ ANRJ données indisponibles", "gray"
@@ -1436,7 +1377,525 @@ class PortfolioEngine:
         return "🚀 Phase 2 : Alpha — Battre le MSCI World", "#14532D"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODULE 9 : FISCAL (v4.1 préservé intégralement)
+# MODULE 9 : PEDAGOGIC ENGINE (NOUVEAU v5.3)
+# Traduit chaque indicateur technique en langage humain simple et actionnable
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PedagogicEngine:
+    """
+    Moteur de traduction pédagogique.
+    Transforme chaque métrique technique en message compréhensible
+    pour un investisseur particulier non professionnel.
+
+    Principe : chaque méthode retourne un Dict avec :
+      - value     : valeur brute formatée
+      - emoji     : icône expressive
+      - level     : "green" / "orange" / "red"
+      - title     : titre simple
+      - explain   : explication en français simple
+      - scale     : liste de seuils compréhensibles
+      - action    : que faire concrètement
+    """
+
+    # ── Traduction Volatilité ─────────────────────────────────────────────────
+    def translate_volatility(self, vol: Optional[float], asset_name: str) -> Dict:
+        """
+        Volatilité = combien l'ETF peut bouger dans tous les sens.
+        < 15% = calme, 15-25% = normal, > 25% = agité.
+        """
+        if vol is None:
+            return {"value": "N/A", "emoji": "❓", "level": "orange",
+                    "title": "Agitation de l'ETF",
+                    "explain": "Donnée indisponible pour le moment.",
+                    "scale": [], "action": "Revérifier plus tard."}
+
+        pct = vol * 100
+
+        if pct < 15:
+            emoji, level, msg, action = "😌", "green", "L'ETF est calme et stable.", "Aucune vigilance particulière."
+        elif pct < 25:
+            emoji, level, msg, action = "😐", "orange", "L'ETF bouge normalement.", "Surveillez les niveaux importants."
+        else:
+            emoji, level, msg, action = "😰", "red", f"L'ETF est agité — des variations brutales sont possibles.", "Réduisez éventuellement la position."
+
+        return {
+            "value":   f"{pct:.1f}%",
+            "emoji":   emoji,
+            "level":   level,
+            "title":   f"Agitation de {asset_name}",
+            "explain": f"{msg}\n\nPlus ce chiffre est élevé, plus l'ETF peut perdre ou gagner brusquement en peu de temps.",
+            "scale":   [
+                {"label": "< 15% — Calme", "cls": "scale-green"},
+                {"label": "15-25% — Normal", "cls": "scale-orange"},
+                {"label": "> 25% — Risqué", "cls": "scale-red"},
+            ],
+            "action":  action,
+        }
+
+    # ── Traduction Beta ───────────────────────────────────────────────────────
+    def translate_beta(self, beta: Optional[float], asset_name: str) -> Dict:
+        """
+        Beta = multiplicateur de mouvement par rapport au marché mondial.
+        Beta 1.5 signifie que si le World gagne 10%, l'ETF gagne 15%
+        (mais aussi perd 15% si le World perd 10%).
+        """
+        if beta is None:
+            return {"value": "N/A", "emoji": "❓", "level": "orange",
+                    "title": "Sensibilité au marché",
+                    "explain": "Donnée indisponible.",
+                    "scale": [], "action": "Revérifier plus tard."}
+
+        if beta < 0:
+            emoji, level = "🔄", "orange"
+            msg    = "Cet ETF évolue à contre-courant du marché mondial."
+            action = "Position défensive intéressante en période de baisse."
+        elif beta < 0.8:
+            emoji, level = "🛡️", "green"
+            msg    = f"L'ETF bouge {(1-beta)*100:.0f}% moins que le marché mondial."
+            action = "Position défensive — protège bien en cas de baisse."
+        elif beta < 1.2:
+            emoji, level = "⚖️", "green"
+            msg    = "L'ETF suit le marché mondial de façon équilibrée."
+            action = "Comportement neutre, aucune vigilance particulière."
+        elif beta < 1.8:
+            emoji, level = "⚡", "orange"
+            excess = (beta - 1) * 100
+            msg    = f"L'ETF bouge {excess:.0f}% plus violemment que le marché mondial. Si le World baisse de 10%, {asset_name} peut baisser de {beta*10:.0f}%."
+            action = "Gardez une position limitée ou utilisez des stops."
+        else:
+            emoji, level = "🌋", "red"
+            msg    = f"L'ETF est très sensible aux mouvements du marché — il amplifie les hausses ET les baisses de façon importante."
+            action = "Position risquée — limitez à une part raisonnable du portefeuille."
+
+        return {
+            "value":   f"{beta:.2f}×",
+            "emoji":   emoji,
+            "level":   level,
+            "title":   f"Sensibilité au marché de {asset_name}",
+            "explain": msg,
+            "scale":   [
+                {"label": "< 0.8 — Défensif", "cls": "scale-green"},
+                {"label": "0.8-1.2 — Neutre", "cls": "scale-green"},
+                {"label": "1.2-1.8 — Offensif", "cls": "scale-orange"},
+                {"label": "> 1.8 — Très risqué", "cls": "scale-red"},
+            ],
+            "action":  action,
+        }
+
+    # ── Traduction Drawdown ───────────────────────────────────────────────────
+    def translate_drawdown(self, current_dd: Optional[float],
+                            max_dd: Optional[float], asset_name: str) -> Dict:
+        """
+        Drawdown = distance depuis le dernier sommet.
+        -10% signifie que l'ETF est 10% en dessous de son récent pic.
+        """
+        if current_dd is None:
+            return {"value": "N/A", "emoji": "❓", "level": "orange",
+                    "title": "Recul depuis le sommet",
+                    "explain": "Donnée indisponible.",
+                    "scale": [], "action": "Revérifier plus tard."}
+
+        abs_dd = abs(current_dd)
+
+        if abs_dd < 3:
+            emoji, level = "🏔️", "green"
+            msg    = f"{asset_name} est proche de son récent sommet. Bonne santé graphique."
+            action = "Aucune alerte — position saine."
+        elif abs_dd < 8:
+            emoji, level = "📉", "orange"
+            msg    = f"{asset_name} a reculé de {abs_dd:.1f}% depuis son dernier sommet. Repli normal."
+            action = "Surveillance normale — pas d'action urgente."
+        elif abs_dd < 15:
+            emoji, level = "⚠️", "orange"
+            msg    = f"{asset_name} a reculé de {abs_dd:.1f}% depuis son dernier sommet. Correction significative."
+            action = "Vérifiez si votre stop-loss est proche."
+        else:
+            emoji, level = "🚨", "red"
+            msg    = f"{asset_name} a chuté de {abs_dd:.1f}% depuis son sommet récent. Perte importante non récupérée."
+            action = "Envisagez de réduire la position ou d'activer le stop-loss."
+
+        max_str = f" | Plus forte baisse 1 an : {abs(max_dd):.1f}%" if max_dd is not None else ""
+
+        return {
+            "value":   f"{current_dd:.1f}%",
+            "emoji":   emoji,
+            "level":   level,
+            "title":   f"Recul depuis le sommet de {asset_name}",
+            "explain": msg + max_str,
+            "scale":   [
+                {"label": "0 à -3% — Sommet", "cls": "scale-green"},
+                {"label": "-3 à -8% — Repli normal", "cls": "scale-orange"},
+                {"label": "> -8% — Correction", "cls": "scale-red"},
+            ],
+            "action":  action,
+        }
+
+    # ── Traduction Régime de Marché ───────────────────────────────────────────
+    def translate_regime(self, regime: Dict) -> Dict:
+        """
+        Le régime de marché = météo boursière mondiale actuelle.
+        Détermine si c'est le bon moment pour prendre des risques.
+        """
+        label = regime["confirmed_label"]
+        score = regime["confirmed_score"]
+
+        translations = {
+            "Euphorie": {
+                "emoji": "🚀", "level": "green",
+                "explain": "Les marchés mondiaux sont en pleine euphorie. Les investisseurs achètent massivement.",
+                "action": "Bon moment pour maintenir vos positions, mais restez vigilant — les retournements arrivent sans prévenir.",
+                "conseil": "Vos ETFs peuvent progresser, mais préparez vos stops.",
+            },
+            "Expansion": {
+                "emoji": "📈", "level": "green",
+                "explain": "Les marchés sont en phase de croissance régulière. Contexte globalement favorable.",
+                "action": "Maintenez vos positions. Vous pouvez envisager des renforcements si les conditions locales le permettent.",
+                "conseil": "Phase idéale pour votre portefeuille Lazy Core + Satellites.",
+            },
+            "Neutre": {
+                "emoji": "⚖️", "level": "orange",
+                "explain": "Les marchés sont sans direction claire. Autant de signaux positifs que négatifs.",
+                "action": "Réduisez légèrement les positions risquées si vous n'êtes pas à l'aise. Pas d'urgence.",
+                "conseil": "Attendez une confirmation avant d'agir.",
+            },
+            "Stress": {
+                "emoji": "😟", "level": "orange",
+                "explain": "Les marchés montrent des signes de fatigue. La nervosité augmente.",
+                "action": "Réduisez les positions satellites (Hydrogen, EM Asia). Renforcez l'or ou le World.",
+                "conseil": "Ce n'est pas le moment d'acheter. Préservez votre capital.",
+            },
+            "Contraction": {
+                "emoji": "🚨", "level": "red",
+                "explain": "Crise ou forte baisse des marchés mondiaux. Contexte très défavorable.",
+                "action": "Réduisez fortement les satellites. Passez en mode défensif (or, liquidités).",
+                "conseil": "Priorité : protéger votre capital, pas gagner de l'argent.",
+            },
+            "En attente": {
+                "emoji": "⏳", "level": "orange",
+                "explain": "Les signaux sont contradictoires. Le régime n'est pas encore confirmé.",
+                "action": "Attendez 1-2 jours que la situation se clarifie avant d'agir.",
+                "conseil": "Ne prenez pas de décision importante dans le flou.",
+            },
+        }
+
+        info = translations.get(label, translations["En attente"])
+        return {
+            "label":   label,
+            "score":   score,
+            "emoji":   info["emoji"],
+            "level":   info["level"],
+            "explain": info["explain"],
+            "action":  info["action"],
+            "conseil": info["conseil"],
+        }
+
+    # ── Traduction Leadership (Satellite vs World) ────────────────────────────
+    def translate_leadership(self, nom: str, weekly_gaps: List[float]) -> Dict:
+        """
+        Leadership = est-ce que l'ETF fait mieux que le MSCI World ?
+        Si oui → l'ETF a une valeur ajoutée.
+        Sinon → autant acheter du World pur.
+        """
+        if not weekly_gaps:
+            return {
+                "emoji": "❓", "level": "orange",
+                "message": "Données insuffisantes pour évaluer le leadership.",
+                "detail": "", "action": "Revérifiez dans quelques jours.",
+            }
+
+        # Compter les semaines positives
+        pos_weeks   = sum(1 for g in weekly_gaps if g > 0)
+        neg_weeks   = sum(1 for g in weekly_gaps if g < 0)
+        recent_gap  = weekly_gaps[-1] if weekly_gaps else 0
+        avg_gap     = sum(weekly_gaps) / len(weekly_gaps)
+        n           = len(weekly_gaps)
+
+        # Tendance : 3 semaines consécutives de sous-performance
+        consec_neg  = 0
+        for g in reversed(weekly_gaps):
+            if g < 0: consec_neg += 1
+            else:     break
+
+        if pos_weeks >= n * 0.6 and avg_gap > 0:
+            emoji, level = "🟢", "green"
+            msg    = f"🟢 {nom} conserve son leadership face au MSCI World."
+            detail = f"{pos_weeks}/{n} semaines positives · Moyenne : {avg_gap:+.1f}%"
+            action = f"✅ Conserver la position — {nom} justifie sa place dans le portefeuille."
+        elif consec_neg >= 3:
+            emoji, level = "🔴", "red"
+            msg    = f"🔴 Le MSCI World devient statistiquement plus intéressant que {nom}."
+            detail = f"{consec_neg} semaines consécutives de sous-performance"
+            action = f"⚠️ Envisagez de réduire {nom} et d'augmenter MSCI World."
+        elif neg_weeks > pos_weeks:
+            emoji, level = "🟠", "orange"
+            msg    = f"🟠 {nom} perd progressivement son avantage face au MSCI World."
+            detail = f"{neg_weeks}/{n} semaines négatives · Moyenne : {avg_gap:+.1f}%"
+            action = f"👀 Surveillez de près — sans amélioration, envisagez une rotation."
+        else:
+            emoji, level = "🟡", "orange"
+            msg    = f"🟡 {nom} est à égalité avec le MSCI World sur la période."
+            detail = f"Performance équivalente · Moyenne : {avg_gap:+.1f}%"
+            action = "Maintien raisonnable — suivez l'évolution."
+
+        return {
+            "emoji": emoji, "level": level,
+            "message": msg, "detail": detail, "action": action,
+        }
+
+    # ── Calcul performances hebdomadaires ────────────────────────────────────
+    def get_weekly_performances(self, dm: DataManager,
+                                 ticker: str, n_weeks: int = 5) -> Tuple[List[str], List[float], List[float]]:
+        """
+        Retourne les performances hebdomadaires de l'actif et du World sur n_weeks semaines.
+        Format retourné : (labels, sat_perfs, world_perfs)
+        labels  = ["S-4", "S-3", "S-2", "S-1", "En cours"]
+        """
+        world_close = None
+        for wt in WORLD_TICKERS:
+            df = dm.data.get(wt, pd.DataFrame())
+            if not df.empty and "Close" in df.columns:
+                world_close = df["Close"].dropna()
+                break
+
+        sat_df = dm.data.get(ticker, pd.DataFrame())
+        if world_close is None or sat_df.empty or "Close" not in sat_df.columns:
+            return [], [], []
+
+        sat_close = sat_df["Close"].dropna()
+        common    = sat_close.index.intersection(world_close.index)
+        if len(common) < 10:
+            return [], [], []
+
+        # Regrouper par semaine ISO
+        sat_w   = sat_close[common].resample("W").last()
+        world_w = world_close[common].resample("W").last()
+
+        # Aligner
+        common_w = sat_w.index.intersection(world_w.index)
+        if len(common_w) < 2:
+            return [], [], []
+
+        sat_w   = sat_w[common_w]
+        world_w = world_w[common_w]
+
+        # Rendements hebdomadaires
+        sat_ret   = sat_w.pct_change().dropna() * 100
+        world_ret = world_w.pct_change().dropna() * 100
+
+        # Prendre les n_weeks dernières semaines disponibles
+        n = min(n_weeks, len(sat_ret))
+        sat_ret   = sat_ret.iloc[-n:]
+        world_ret = world_ret.iloc[-n:]
+
+        # Labels
+        labels = []
+        total  = len(sat_ret)
+        for i in range(total):
+            if i == total - 1:
+                labels.append("En cours")
+            else:
+                labels.append(f"S-{total - 1 - i}")
+
+        return labels, list(sat_ret.values), list(world_ret.values)
+
+    # ── Traduction Score Stratégique ──────────────────────────────────────────
+    def translate_simple_score(self, score_raw: int) -> Dict:
+        """
+        Traduit le score technique -4/+4 en score humain 0-5
+        avec message actionnable simple.
+        """
+        # Mapping -4/+4 → 0/5
+        mapping = {-4: 0, -3: 0, -2: 1, -1: 2, 0: 2, 1: 3, 2: 3, 3: 4, 4: 5}
+        simple  = mapping.get(max(-4, min(4, score_raw)), 2)
+
+        messages = {
+            5: ("⭐⭐⭐⭐⭐", "Momentum très fort", "ring-5",
+                "Tout est au vert. L'ETF est en pleine forme.", "Maintenez la position."),
+            4: ("⭐⭐⭐⭐☆", "Tendance saine", "ring-4",
+                "L'ETF progresse bien et reste au-dessus de ses moyennes.", "Maintenez — éventuellement renforcez."),
+            3: ("⭐⭐⭐☆☆", "Situation neutre", "ring-3",
+                "L'ETF est stable, sans forte conviction dans un sens ou l'autre.", "Maintenez sans renforcer."),
+            2: ("⭐⭐☆☆☆", "Fragilité", "ring-2",
+                "L'ETF montre des signes de faiblesse. Quelques alertes à surveiller.", "Soyez prudent — pas de renforcement."),
+            1: ("⭐☆☆☆☆", "Risque élevé", "ring-1",
+                "L'ETF est clairement en difficulté. Plusieurs indicateurs négatifs.", "Envisagez de réduire la position."),
+            0: ("☆☆☆☆☆", "Danger", "ring-0",
+                "Situation très dégradée. Risque de pertes importantes.", "Réduction forte recommandée."),
+        }
+
+        stars, label, ring_cls, explain, action = messages[simple]
+
+        return {
+            "score":    simple,
+            "stars":    stars,
+            "label":    label,
+            "ring_cls": ring_cls,
+            "explain":  explain,
+            "action":   action,
+        }
+
+    # ── Traduction Sentinelles Sectorielles ───────────────────────────────────
+    def translate_sentinelles(self, sent_rows: List[Dict],
+                               sector: str) -> Dict:
+        """
+        Traduit les alertes sentinelles en messages sectoriels simples.
+        sector = "hydrogen" ou "em_asia"
+        """
+        names = SENTINELLES_HYDROGEN if sector == "hydrogen" else SENTINELLES_EM_ASIA
+        alerts = [r for r in sent_rows
+                  if r.get("Sentinelle") in names and r.get("Alerte") == "⚠️"]
+        total  = sum(1 for r in sent_rows if r.get("Sentinelle") in names)
+
+        if not alerts:
+            return {
+                "emoji": "🟢", "level": "green",
+                "message": "Les leaders du secteur restent solides.",
+                "detail": f"Aucune alerte sur {total} valeurs surveillées.",
+                "action": "Pas d'action sectorielle requise.",
+            }
+        elif len(alerts) == 1:
+            return {
+                "emoji": "🟠", "level": "orange",
+                "message": "Les leaders commencent à perdre du momentum.",
+                "detail": f"{alerts[0]['Sentinelle']} est sous sa moyenne mobile 20 jours.",
+                "action": "Surveillance accrue — pas d'urgence.",
+            }
+        else:
+            names_alert = ", ".join([a["Sentinelle"] for a in alerts])
+            return {
+                "emoji": "🔴", "level": "red",
+                "message": "Les leaders sectoriels décrochent fortement.",
+                "detail": f"{names_alert} sous leur moyenne mobile.",
+                "action": "Signal négatif pour le secteur — réduction conseillée.",
+            }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODULE 10 : STRATEGIC ENGINE (NOUVEAU v5.3)
+# Score stratégique simplifié 0→5, orienté prise de décision
+# ─────────────────────────────────────────────────────────────────────────────
+
+class StrategicEngine:
+    """
+    Score stratégique simplifié pour l'investisseur particulier.
+    5 dimensions, chacune notée 0 ou 1 :
+      1. Momentum    : L'ETF monte-t-il en ce moment ?
+      2. Structure   : Est-il au-dessus de sa moyenne 20 jours ?
+      3. Leadership  : Fait-il mieux que le MSCI World ?
+      4. Macro       : L'environnement économique est-il favorable ?
+      5. Risque      : La volatilité est-elle acceptable ?
+
+    Score final = somme des 5 critères (0 à 5)
+    """
+
+    def __init__(self, dm: DataManager, mre: MarketRegimeEngine, qre: QuantRiskEngine):
+        self.dm  = dm
+        self.mre = mre
+        self.qre = qre
+
+    def compute(self, ticker: str, unified_score: Dict, regime: Dict) -> Dict:
+        """
+        Retourne un score 0-5 avec détail des 5 dimensions.
+        """
+        details = []
+
+        # ── 1. Momentum ──────────────────────────────────────────────────────
+        rsi = unified_score.get("rsi_raw")
+        if rsi is not None and 45 < rsi < 70:
+            mom_score = 1
+            mom_label = "✅ L'ETF est en bonne dynamique"
+            mom_value = f"RSI {rsi:.0f}"
+        elif rsi is not None:
+            mom_score = 0
+            mom_label = "❌ La dynamique est faible ou tendue"
+            mom_value = f"RSI {rsi:.0f}"
+        else:
+            mom_score = 0
+            mom_label = "❓ Donnée indisponible"
+            mom_value = "N/A"
+        details.append({"dim": "Momentum", "score": mom_score,
+                         "label": mom_label, "value": mom_value,
+                         "help": "Le RSI mesure la force de la tendance actuelle. Entre 45 et 70 = sain."})
+
+        # ── 2. Structure ─────────────────────────────────────────────────────
+        struct_score = 1 if unified_score.get("structure", -1) > 0 else 0
+        info = self.dm.analyze_ticker(ticker)
+        if info and info["sma20"] and info["prix"]:
+            st_label = ("✅ Prix au-dessus de la moyenne 20 jours" if struct_score == 1
+                        else "❌ Prix sous la moyenne 20 jours")
+            st_value = f"{info['prix']:.2f}€ vs SMA20 {info['sma20']:.2f}€"
+        else:
+            st_label = "❓ Donnée indisponible"
+            st_value = "N/A"
+        details.append({"dim": "Structure", "score": struct_score,
+                         "label": st_label, "value": st_value,
+                         "help": "Si le prix est au-dessus de sa moyenne sur 20 jours, la tendance court terme est positive."})
+
+        # ── 3. Leadership ─────────────────────────────────────────────────────
+        lead_score = 1 if unified_score.get("leadership", -2) > 0 else 0
+        rs = self.dm.relative_strength_slope(ticker, 14)
+        if rs is not None:
+            lead_label = ("✅ L'ETF surperforme le MSCI World" if lead_score == 1
+                          else "❌ L'ETF sous-performe le MSCI World")
+            lead_value = f"Pente : {rs:+.5f}"
+        else:
+            lead_label = "❓ Donnée indisponible"
+            lead_value = "N/A"
+        details.append({"dim": "Leadership", "score": lead_score,
+                         "label": lead_label, "value": lead_value,
+                         "help": "Compare la performance de l'ETF vs le MSCI World sur 14 jours. Si l'ETF fait moins bien que le World, il perd son intérêt."})
+
+        # ── 4. Macro ──────────────────────────────────────────────────────────
+        reg_score = regime.get("confirmed_score", 0)
+        macro_ok  = reg_score >= 1
+        macro_s   = 1 if macro_ok else 0
+        macro_label = (f"✅ Environnement favorable ({regime['confirmed_label']})"
+                       if macro_ok
+                       else f"❌ Environnement difficile ({regime['confirmed_label']})")
+        details.append({"dim": "Macro", "score": macro_s,
+                         "label": macro_label, "value": f"Score {reg_score:+d}/5",
+                         "help": "L'environnement économique mondial. Si les taux, les indices et la volatilité sont favorables, la macro est positive."})
+
+        # ── 5. Risque ─────────────────────────────────────────────────────────
+        vol = self.qre.rolling_volatility(ticker, 30)
+        if vol is not None:
+            risk_ok = vol < 0.25
+            risk_s  = 1 if risk_ok else 0
+            risk_label = (f"✅ Agitation acceptable ({vol*100:.1f}%)"
+                          if risk_ok else f"❌ ETF très agité ({vol*100:.1f}%)")
+            risk_value = f"{vol*100:.1f}% ann."
+        else:
+            risk_s     = 0
+            risk_label = "❓ Donnée indisponible"
+            risk_value = "N/A"
+        details.append({"dim": "Risque", "score": risk_s,
+                         "label": risk_label, "value": risk_value,
+                         "help": "Niveau d'agitation de l'ETF. En dessous de 25%, le risque est gérable."})
+
+        total = sum(d["score"] for d in details)
+
+        # Verdict global
+        if total >= 4:
+            verdict = "✅ Conditions très favorables — Maintien recommandé"
+            verdict_cls = "verdict-green"
+        elif total >= 3:
+            verdict = "🟡 Conditions correctes — Maintien avec surveillance"
+            verdict_cls = "verdict-orange"
+        elif total >= 2:
+            verdict = "🟠 Conditions mitigées — Prudence conseillée"
+            verdict_cls = "verdict-orange"
+        else:
+            verdict = "🔴 Conditions défavorables — Réduction recommandée"
+            verdict_cls = "verdict-red"
+
+        return {
+            "total":       total,
+            "details":     details,
+            "verdict":     verdict,
+            "verdict_cls": verdict_cls,
+        }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MODULE 11 : FISCAL (v4.1 préservé intégralement)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def net_apres_impots(enveloppe: str, montant: float,
@@ -1460,7 +1919,7 @@ def net_apres_impots(enveloppe: str, montant: float,
     return montant, ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODULE 10 : VISUALISATIONS (Graphiques réutilisables)
+# MODULE 12 : VISUALISATIONS (v5.2 préservées + nouvelles v5.3)
 # ─────────────────────────────────────────────────────────────────────────────
 
 _PLOTLY_BASE = dict(
@@ -1469,7 +1928,6 @@ _PLOTLY_BASE = dict(
 )
 
 def plot_equity_curve(history: pd.DataFrame) -> Optional[go.Figure]:
-    """Courbe d'équité avec fond coloré par régime."""
     if history.empty or "capital_cloture" not in history.columns:
         return None
     df = history.dropna(subset=["capital_cloture"]).copy()
@@ -1480,7 +1938,6 @@ def plot_equity_curve(history: pd.DataFrame) -> Optional[go.Figure]:
 
     fig = go.Figure()
 
-    # Fond coloré par régime
     regime_colors = {"Euphorie": "rgba(168,85,247,.10)", "Expansion": "rgba(34,197,94,.10)",
                      "Neutre": "rgba(59,130,246,.08)", "Stress": "rgba(245,158,11,.10)",
                      "Contraction": "rgba(255,49,49,.12)"}
@@ -1493,12 +1950,10 @@ def plot_equity_curve(history: pd.DataFrame) -> Optional[go.Figure]:
                 fig.add_vrect(x0=x0, x1=row["date_dt"], fillcolor=col, layer="below", line_width=0)
                 x0 = row["date_dt"]
             prev_regime = row.get("regime")
-        # Dernier segment
         if prev_regime:
             col = regime_colors.get(prev_regime, "rgba(255,255,255,.03)")
             fig.add_vrect(x0=x0, x1=df["date_dt"].iloc[-1], fillcolor=col, layer="below", line_width=0)
 
-    # Ligne equity
     fig.add_trace(go.Scatter(
         x=df["date_dt"], y=df["capital_cloture"].astype(float),
         mode="lines+markers",
@@ -1508,7 +1963,6 @@ def plot_equity_curve(history: pd.DataFrame) -> Optional[go.Figure]:
         hovertemplate="<b>%{x|%d/%m/%Y}</b><br>%{y:,.2f}€<extra></extra>",
     ))
 
-    # Perf cumulée en secondary axis si disponible
     if "perf_cumul" in df.columns and df["perf_cumul"].notna().any():
         fig.add_trace(go.Scatter(
             x=df["date_dt"], y=df["perf_cumul"].astype(float),
@@ -1519,8 +1973,7 @@ def plot_equity_curve(history: pd.DataFrame) -> Optional[go.Figure]:
 
     fig.update_layout(
         **_PLOTLY_BASE,
-        title=dict(text="<b>Courbe d'Équité — Capital Clôture</b>",
-                   font=dict(size=13, color="#6B7585")),
+        title=dict(text="<b>Évolution de votre capital</b>", font=dict(size=13, color="#6B7585")),
         margin=dict(t=40, b=30, l=60, r=60),
         height=280,
         legend=dict(font=dict(size=10), bgcolor="rgba(0,0,0,0)", x=0, y=1.15, orientation="h"),
@@ -1532,8 +1985,74 @@ def plot_equity_curve(history: pd.DataFrame) -> Optional[go.Figure]:
     return fig
 
 
+def plot_weekly_leadership(labels: List[str], sat_perfs: List[float],
+                            world_perfs: List[float],
+                            sat_name: str, color_sat: str = "#D4AF37") -> go.Figure:
+    """
+    v5.3 NOUVEAU : Graphique barres groupées hebdomadaires
+    Compare performance satellite vs MSCI World sur 5 semaines.
+    """
+    fig = go.Figure()
+
+    # Barres satellite
+    bar_colors_sat = [
+        "#22C55E" if v > 0 else "#FF3131" for v in sat_perfs
+    ]
+
+    fig.add_trace(go.Bar(
+        x=labels,
+        y=sat_perfs,
+        name=sat_name,
+        marker_color=bar_colors_sat,
+        marker_line_width=0,
+        text=[f"{v:+.1f}%" for v in sat_perfs],
+        textposition="outside",
+        textfont=dict(size=11, color="#CBD5E1"),
+        hovertemplate=f"<b>{sat_name}</b><br>%{{x}}: %{{y:+.1f}}%<extra></extra>",
+    ))
+
+    # Barres World
+    bar_colors_world = [
+        "rgba(59,130,246,.7)" if v > 0 else "rgba(59,130,246,.4)" for v in world_perfs
+    ]
+
+    fig.add_trace(go.Bar(
+        x=labels,
+        y=world_perfs,
+        name="MSCI World",
+        marker_color=bar_colors_world,
+        marker_line_width=0,
+        text=[f"{v:+.1f}%" for v in world_perfs],
+        textposition="outside",
+        textfont=dict(size=11, color="#93C5FD"),
+        hovertemplate="<b>MSCI World</b><br>%{x}: %{y:+.1f}%<extra></extra>",
+    ))
+
+    # Ligne zéro
+    fig.add_hline(y=0, line_dash="dot", line_color="#4B5563", opacity=0.8)
+
+    fig.update_layout(
+        **_PLOTLY_BASE,
+        barmode="group",
+        bargap=0.20,
+        bargroupgap=0.05,
+        title=dict(
+            text=f"<b>Leadership hebdomadaire : {sat_name} vs MSCI World</b>",
+            font=dict(size=13, color="#6B7585")
+        ),
+        margin=dict(t=50, b=40, l=50, r=30),
+        height=300,
+        legend=dict(
+            font=dict(size=11), bgcolor="rgba(0,0,0,0)",
+            x=0, y=1.12, orientation="h"
+        ),
+        xaxis=dict(gridcolor="#2E3340", showgrid=False),
+        yaxis=dict(gridcolor="#2E3340", ticksuffix="%", zeroline=False),
+    )
+    return fig
+
+
 def plot_correlation_heatmap(corr_df: pd.DataFrame) -> go.Figure:
-    """Heatmap de corrélation Pearson (60j) — labels courts."""
     short = {"ANRJ.PA": "H₂", "AASI.PA": "EM", "MWRD.PA": "World",
              "DCAM.PA": "W-PEA", "OR-EUR.PA": "Or"}
     labels = [short.get(c, c) for c in corr_df.columns]
@@ -1550,15 +2069,13 @@ def plot_correlation_heatmap(corr_df: pd.DataFrame) -> go.Figure:
     ))
     fig.update_layout(
         **_PLOTLY_BASE,
-        title=dict(text="<b>Corrélation Pearson (60j)</b>",
-                   font=dict(size=12, color="#6B7585")),
+        title=dict(text="<b>Corrélation Pearson (60j)</b>", font=dict(size=12, color="#6B7585")),
         margin=dict(t=40, b=10, l=60, r=20), height=220,
     )
     return fig
 
 
 def plot_risk_contribution(rc: Dict) -> Optional[go.Figure]:
-    """Barres horizontales des contributions au risque."""
     if not rc:
         return None
     short = {"ANRJ.PA": "H₂", "AASI.PA": "EM Asia", "MWRD.PA": "MSCI World",
@@ -1576,8 +2093,7 @@ def plot_risk_contribution(rc: Dict) -> Optional[go.Figure]:
                   annotation_text="Seuil 40%", annotation_font=dict(color="#FF3131", size=9))
     fig.update_layout(
         **_PLOTLY_BASE,
-        title=dict(text="<b>Risk Contribution (%)</b>",
-                   font=dict(size=12, color="#6B7585")),
+        title=dict(text="<b>Risk Contribution (%)</b>", font=dict(size=12, color="#6B7585")),
         margin=dict(t=40, b=10, l=80, r=20), height=200,
         xaxis=dict(gridcolor="#2E3340", ticksuffix="%"),
         yaxis=dict(gridcolor="rgba(0,0,0,0)"),
@@ -1586,7 +2102,6 @@ def plot_risk_contribution(rc: Dict) -> Optional[go.Figure]:
 
 
 def plot_weight_indicator(current_pct: float, target_pct: float) -> go.Figure:
-    """Jauge go.Indicator : Poids Actuel vs Cible."""
     fig = go.Figure(go.Indicator(
         mode="gauge+number+delta",
         value=round(current_pct, 1),
@@ -1623,7 +2138,6 @@ def plot_weight_indicator(current_pct: float, target_pct: float) -> go.Figure:
 
 
 def plot_alpha_bars(dm: DataManager, ticker: str, nom: str) -> Optional[go.Figure]:
-    """Alpha quotidien (actif vs MSCI World) — 15 derniers jours."""
     world_df = None
     for wt in WORLD_TICKERS:
         df = dm.data.get(wt, pd.DataFrame())
@@ -1646,7 +2160,7 @@ def plot_alpha_bars(dm: DataManager, ticker: str, nom: str) -> Optional[go.Figur
     fig.add_hline(y=0, line_dash="dot", line_color="#6B7585", opacity=.6)
     fig.update_layout(
         **_PLOTLY_BASE,
-        title=dict(text=f"<b>Alpha quotidien</b> : {nom} vs MSCI World — 15j",
+        title=dict(text=f"<b>Écart quotidien</b> : {nom} vs MSCI World — 15 derniers jours",
                    font=dict(size=11, color="#6B7585")),
         margin=dict(t=35, b=25, l=55, r=15), height=200, showlegend=False,
         xaxis=dict(gridcolor="#2E3340", showgrid=False),
@@ -1656,7 +2170,6 @@ def plot_alpha_bars(dm: DataManager, ticker: str, nom: str) -> Optional[go.Figur
 
 
 def plot_relative_perf(dm: DataManager, ticker: str, nom: str) -> Optional[go.Figure]:
-    """Performance relative actif vs MSCI World depuis DATE_DEBUT."""
     world_df = None
     for wt in WORLD_TICKERS:
         df = dm.data.get(wt, pd.DataFrame())
@@ -1689,7 +2202,7 @@ def plot_relative_perf(dm: DataManager, ticker: str, nom: str) -> Optional[go.Fi
     fig.add_hline(y=0, line_dash="dot", line_color="#6B7585", opacity=.7)
     fig.update_layout(
         **_PLOTLY_BASE,
-        title=dict(text=f"Perf relative : {nom} vs World",
+        title=dict(text=f"Performance relative : {nom} vs World (base 100)",
                    font=dict(size=11, color="#6B7585")),
         margin=dict(t=20, b=20, l=50, r=20), height=200, showlegend=False,
         xaxis=dict(gridcolor="#2E3340"), yaxis=dict(gridcolor="#2E3340", ticksuffix="%"),
@@ -1697,36 +2210,29 @@ def plot_relative_perf(dm: DataManager, ticker: str, nom: str) -> Optional[go.Fi
     return fig
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODULE 11 : STREAMLIT UI (Orchestrateur de rendu)
+# MODULE 13 : STREAMLIT UI (v5.2 + nouvelles sections pédagogiques v5.3)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class StreamlitUI:
-    """
-    Sépare strictement la logique de rendu de la logique métier.
-    Chaque méthode render_* correspond à une section de l'interface.
-    """
-
     def __init__(self, dm: DataManager, pm: PersistenceManager,
                  mre: MarketRegimeEngine, qre: QuantRiskEngine,
-                 pe: PortfolioEngine):
+                 pe: PortfolioEngine, pde: PedagogicEngine,
+                 se: StrategicEngine):
         self.dm  = dm
         self.pm  = pm
         self.mre = mre
         self.qre = qre
         self.pe  = pe
+        self.pde = pde
+        self.se  = se
 
-    # ── STATIC HELPER ──────────────────────────────────────────────────────────
     @staticmethod
     def _sign(v: float) -> str:
         return "+" if v >= 0 else ""
 
-    # ── SIDEBAR ────────────────────────────────────────────────────────────────
+    # ── SIDEBAR ───────────────────────────────────────────────────────────────
     def render_sidebar(self) -> Tuple[bool, List[Dict], float, float, float]:
-        """
-        Rendu de la sidebar. Retourne :
-        (mode_direct, positions_conf, capital_reel, ajustement_pat, bonus_fortuneo)
-        """
-        st.sidebar.markdown("## ⚙️ Paramètres v5.2")
+        st.sidebar.markdown("## ⚙️ Paramètres v5.3")
         mode_direct = st.sidebar.toggle("🔌 Mode Direct (Vue Brute)", value=False,
             help="Désactive tous les ajustements — valeur marchande pure.")
         st.sidebar.markdown("---")
@@ -1741,27 +2247,25 @@ class StreamlitUI:
                     value=st.session_state["cfg_bonus_fortuneo"],
                     step=10.0, format="%.2f", key="input_bonus_fortuneo")
 
-        if st.sidebar.button("💾 Sauvegarder paramètres", use_container_width=True):
+        if st.sidebar.button("💾 Sauvegarder", use_container_width=True):
             ok = _save_config(cap, adj, bonus)
             st.session_state["cfg_capital_reel"]   = cap
             st.session_state["cfg_ajustement_pat"] = adj
             st.session_state["cfg_bonus_fortuneo"] = bonus
-            st.session_state["save_feedback"] = "✅ Paramètres sauvegardés" if ok else "❌ Erreur d'écriture"
+            st.session_state["save_feedback"] = "✅ Sauvegardé" if ok else "❌ Erreur"
         if st.session_state.get("save_feedback"):
             fb  = st.session_state["save_feedback"]
             cls = "save-box" if fb.startswith("✅") else "alert-box"
             st.sidebar.markdown(f'<div class="{cls}">{fb}</div>', unsafe_allow_html=True)
 
-        # Persistance status
         st.sidebar.markdown("---")
         if self.pm.status == "github":
-            st.sidebar.markdown('<div class="persist-ok">🔗 Persistance GitHub Gist active</div>', unsafe_allow_html=True)
+            st.sidebar.markdown('<div class="persist-ok">🔗 GitHub Gist actif</div>', unsafe_allow_html=True)
         elif self.pm.warning_msg:
             st.sidebar.markdown(f'<div class="persist-warn">⚠️ {self.pm.warning_msg}</div>', unsafe_allow_html=True)
         else:
-            st.sidebar.markdown('<div class="persist-warn">📂 SQLite local uniquement</div>', unsafe_allow_html=True)
+            st.sidebar.markdown('<div class="persist-warn">📂 SQLite local</div>', unsafe_allow_html=True)
 
-        # Positions
         st.sidebar.markdown("---")
         st.sidebar.markdown("### 📦 Positions")
         positions_conf = []
@@ -1773,7 +2277,6 @@ class StreamlitUI:
                     step=0.0001, format="%.4f", key=f"r_{pos['nom']}")
                 positions_conf.append({**pos, "parts": parts, "prm": prm})
 
-        # Ajustements
         capital_reel   = cap
         ajustement_pat = 0.0 if mode_direct else adj
         bonus_fortuneo = 0.0 if mode_direct else bonus
@@ -1784,7 +2287,7 @@ class StreamlitUI:
 
         return mode_direct, positions_conf, capital_reel, ajustement_pat, bonus_fortuneo
 
-    # ── HEADER ─────────────────────────────────────────────────────────────────
+    # ── HEADER ────────────────────────────────────────────────────────────────
     def render_header(self, mode_direct: bool, live_ok: int, live_total: int):
         now = datetime.now(ZoneInfo("Europe/Paris"))
         st.markdown(
@@ -1792,64 +2295,78 @@ class StreamlitUI:
             '<span style="font-family:Space Mono,monospace;font-size:1.6rem;font-weight:700;color:#D4AF37;">◈</span>'
             '<span style="font-size:1.5rem;font-weight:700;color:#E2E8F0;">COCKPIT DÉCISIONNEL</span>'
             '<span style="font-family:Space Mono,monospace;font-size:.9rem;color:#6B7585;">'
-            'v5.2 · QUANT-SYSTEM</span></div>', unsafe_allow_html=True)
+            'v5.3 · PÉDAGOGIQUE</span></div>', unsafe_allow_html=True)
 
         c1, c2 = st.columns([3, 1])
         with c1:
             st.caption(f"Prix live · {now.strftime('%d/%m/%Y %H:%M:%S')} (Paris) · Cache 30s/90s")
         with c2:
-            pct   = live_ok / live_total * 100 if live_total else 0
-            bc    = "#22C55E" if pct >= 80 else "#F97316" if pct >= 50 else "#FF3131"
-            tc    = "#0B0E15" if pct >= 80 else "white"
-            st.markdown(f'<div style="text-align:right;">'
-                        f'<span class="badge" style="background:{bc};color:{tc};padding:.2rem .8rem;'
-                        f'border-radius:20px;font-size:.72rem;font-weight:700;">'
-                        f'📡 {live_ok}/{live_total} LIVE</span></div>', unsafe_allow_html=True)
+            pct = live_ok / live_total * 100 if live_total else 0
+            bc  = "#22C55E" if pct >= 80 else "#F97316" if pct >= 50 else "#FF3131"
+            tc  = "#0B0E15" if pct >= 80 else "white"
+            st.markdown(
+                f'<div style="text-align:right;"><span style="background:{bc};color:{tc};'
+                f'padding:.2rem .8rem;border-radius:20px;font-size:.72rem;font-weight:700;">'
+                f'📡 {live_ok}/{live_total} LIVE</span></div>', unsafe_allow_html=True)
         if mode_direct:
             st.markdown('<div class="mode-direct-banner">🔌 MODE DIRECT ACTIF — Valeur marchande pure</div>',
                         unsafe_allow_html=True)
 
-    # ── BANDEAU RÉGIME (Élément central de v5.2) ──────────────────────────────
+    # ── BANDEAU RÉGIME ────────────────────────────────────────────────────────
     def render_regime_banner(self, regime: Dict):
         sc    = regime["confirmed_score"]
         label = regime["confirmed_label"]
         css   = regime["confirmed_css"]
-        conf  = "✅ Confirmé (3j)" if regime["is_confirmed"] else "⏳ En attente de confirmation"
+        conf  = "✅ Confirmé" if regime["is_confirmed"] else "⏳ En attente"
         s3    = " → ".join([f"{s:+d}" for s in regime["scores_3d"]])
 
         st.markdown(
             f'<div class="regime-banner {css}">'
-            f'<div><span style="font-size:1.1rem;">🌍 Régime : <b>{label}</b></span>'
+            f'<div><span style="font-size:1.1rem;">🌍 Météo des marchés : <b>{label}</b></span>'
             f'<span style="font-size:.82rem;margin-left:1rem;opacity:.8;">{conf}</span></div>'
             f'<div style="font-family:Space Mono,monospace;font-size:1.2rem;">'
             f'Score : <b>{sc:+d}/5</b></div>'
             f'<div style="font-size:.78rem;opacity:.7;">3j : {s3}</div>'
             f'</div>', unsafe_allow_html=True)
 
-        # Détail des 5 composantes (expander)
-        with st.expander("📊 Détail des 5 indicateurs du régime", expanded=False):
-            cols = st.columns(5)
-            for i, comp in enumerate(regime.get("components", [])):
-                with cols[i % 5]:
-                    bull = comp["bull"]
-                    ico  = "🟢" if bull is True else "🔴" if bull is False else "⚪"
-                    sc_  = "+1" if bull is True else "−1" if bull is False else "0"
-                    st.markdown(
-                        f'<div class="card" style="padding:.8rem;text-align:center;">'
-                        f'<div style="font-size:1.4rem;">{ico}</div>'
-                        f'<div style="font-size:.72rem;color:#6B7585;margin:.2rem 0;">{comp["name"]}</div>'
-                        f'<div style="font-family:Space Mono;font-weight:700;'
-                        f'color:{"#22C55E" if bull else "#FF3131" if bull is False else "#6B7585"};">'
-                        f'{sc_}</div>'
-                        f'<div style="font-size:.68rem;color:#4B5563;margin-top:.2rem;">{comp["val"]}</div>'
-                        f'</div>', unsafe_allow_html=True)
+        with st.expander("ℹ️ Comment lire la météo des marchés ?", expanded=False):
+            # Traduction pédagogique
+            reg_trans = self.pde.translate_regime(regime)
+            col_exp, col_comp = st.columns([1, 2])
+            with col_exp:
+                level_color = {"green": "#22C55E", "orange": "#F97316", "red": "#FF3131"}.get(reg_trans["level"], "#6B7585")
+                st.markdown(
+                    f'<div class="pedagogy-box">'
+                    f'<div class="pedagogy-title">Ce que ça signifie</div>'
+                    f'<div style="font-size:2rem;text-align:center;margin:.4rem 0;">{reg_trans["emoji"]}</div>'
+                    f'<div style="color:{level_color};font-weight:700;margin-bottom:.4rem;">{label}</div>'
+                    f'<div>{reg_trans["explain"]}</div>'
+                    f'<div style="margin-top:.6rem;padding:.5rem;background:rgba(0,0,0,.2);border-radius:6px;">'
+                    f'💡 <b>Que faire ?</b><br>{reg_trans["action"]}</div>'
+                    f'</div>', unsafe_allow_html=True)
+            with col_comp:
+                st.markdown('<div style="font-size:.82rem;color:#6B7585;margin-bottom:.5rem;">Les 5 critères analysés :</div>', unsafe_allow_html=True)
+                comp_cols = st.columns(5)
+                for i, comp in enumerate(regime.get("components", [])):
+                    with comp_cols[i % 5]:
+                        bull = comp["bull"]
+                        ico  = "🟢" if bull is True else "🔴" if bull is False else "⚪"
+                        sc_  = "+1" if bull is True else "−1" if bull is False else "0"
+                        st.markdown(
+                            f'<div class="card" style="padding:.8rem;text-align:center;">'
+                            f'<div style="font-size:1.4rem;">{ico}</div>'
+                            f'<div style="font-size:.72rem;color:#6B7585;margin:.2rem 0;">{comp["name"]}</div>'
+                            f'<div style="font-family:Space Mono;font-weight:700;'
+                            f'color:{"#22C55E" if bull else "#FF3131" if bull is False else "#6B7585"};">'
+                            f'{sc_}</div>'
+                            f'<div style="font-size:.68rem;color:#4B5563;margin-top:.2rem;">{comp["val"]}</div>'
+                            f'</div>', unsafe_allow_html=True)
 
-    # ── COMMAND CENTER (KPIs) ──────────────────────────────────────────────────
+    # ── COMMAND CENTER ────────────────────────────────────────────────────────
     def render_command_center(self, ptf: Dict, bench: Dict,
                                mode_direct: bool, pm: PersistenceManager):
-        st.markdown("## 🚀 Command Center")
+        st.markdown("## 🚀 Vue d'ensemble du portefeuille")
 
-        # Performance chaînée v5.2
         perf_j_chain, perf_c_chain, base_cap = pm.compute_daily_performance(ptf["valeur_totale"])
 
         c1, c2, c3, c4 = st.columns(4)
@@ -1857,62 +2374,55 @@ class StreamlitUI:
 
         with c1:
             crd = "card card-purple" if mode_direct else "card card-gold"
-            lbl = "Valeur Titres Brute" if mode_direct else "Solde Total Portefeuille"
+            lbl = "Valeur Brute" if mode_direct else "Valeur Totale"
             vj, vjp = ptf["perf_j_eur"], ptf["perf_j_pct"]
             st.markdown(
                 f'<div class="{crd}"><div class="kpi-label">{lbl}<span class="live-badge">LIVE</span></div>'
                 f'<div class="kpi-value">{ptf["solde_total"]:,.2f}€</div>'
                 f'<div class="kpi-delta-{"pos" if vj>=0 else "neg"}">'
-                f'{s(vj)}{vj:,.2f}€ ({s(vjp)}{vjp:.2f}%) vs veille</div></div>',
+                f'{s(vj)}{vj:,.2f}€ ({s(vjp)}{vjp:.2f}%) vs hier</div></div>',
                 unsafe_allow_html=True)
 
         with c2:
-            lbl2 = "Gain Boursier Brut" if mode_direct else "Gain Réel Patrimonial"
-            gr   = ptf["gain_reel"]
-            clr  = "#22C55E" if gr >= 0 else "#FF3131"
+            gr  = ptf["gain_reel"]
+            clr = "#22C55E" if gr >= 0 else "#FF3131"
             st.markdown(
-                f'<div class="card card-blue"><div class="kpi-label">{lbl2}</div>'
+                f'<div class="card card-blue"><div class="kpi-label">Gain / Perte total</div>'
                 f'<div class="kpi-value" style="color:{clr};">{s(gr)}{gr:,.2f}€</div>'
-                f'<div class="small">Capital réel : {ptf["capital_reel"]:,.2f}€</div></div>',
+                f'<div class="small">Investi : {ptf["capital_reel"]:,.2f}€</div></div>',
                 unsafe_allow_html=True)
 
         with c3:
-            p    = ptf["perf_tot_pct"]
-            pc   = "#22C55E" if p >= 0 else "#FF3131"
-            gap  = bench.get("gap")
-            gc   = "#22C55E" if (gap or 0) >= 0 else "#FF3131"
-            body = (f'<div class="small">GAP vs World : '
-                    f'<span style="color:{gc};font-weight:700;">{s(gap)}{gap:.2f}%</span></div>'
+            p   = ptf["perf_tot_pct"]
+            pc  = "#22C55E" if p >= 0 else "#FF3131"
+            gap = bench.get("gap")
+            gc  = "#22C55E" if (gap or 0) >= 0 else "#FF3131"
+            pcc = "#22C55E" if perf_c_chain >= 0 else "#FF3131"
+            body = (f'<div class="small">Vs World : <span style="color:{gc};font-weight:700;">{s(gap)}{gap:.2f}%</span></div>'
                     if gap is not None else "")
-            # Perf chaînée
-            pcc  = "#22C55E" if perf_c_chain >= 0 else "#FF3131"
             st.markdown(
-                f'<div class="card card-blue"><div class="kpi-label">Performance Totale</div>'
+                f'<div class="card card-blue"><div class="kpi-label">Performance</div>'
                 f'<div class="kpi-value" style="color:{pc};">{s(p)}{p:.2f}%</div>'
                 f'{body}'
-                f'<div class="small" style="margin-top:.2rem;">Perf chaînée : '
-                f'<span style="color:{pcc};font-weight:700;">{s(perf_c_chain)}{perf_c_chain:.2f}%</span>'
-                f' | J : {s(perf_j_chain)}{perf_j_chain:.2f}%</div></div>',
-                unsafe_allow_html=True)
+                f'<div class="small">Chaîné : <span style="color:{pcc};font-weight:700;">{s(perf_c_chain)}{perf_c_chain:.2f}%</span></div>'
+                f'</div>', unsafe_allow_html=True)
 
         with c4:
-            pb   = bench.get("perf_bench")
-            pbj  = bench.get("perf_bench_j")
+            pb  = bench.get("perf_bench")
+            pbj = bench.get("perf_bench_j")
             if pb is not None:
                 pbc = "#22C55E" if pb >= 0 else "#FF3131"
                 pbj_html = (f'<div class="kpi-delta-{"pos" if pbj>=0 else "neg"}">'
-                            f'{s(pbj)}{pbj:.2f}% vs veille</div>' if pbj is not None else "")
-                body_bench = (f'<div class="kpi-value" style="color:{pbc};">{s(pb)}{pb:.2f}%</div>'
-                              f'{pbj_html}')
+                            f'{s(pbj)}{pbj:.2f}% vs hier</div>' if pbj is not None else "")
+                body_bench = f'<div class="kpi-value" style="color:{pbc};">{s(pb)}{pb:.2f}%</div>{pbj_html}'
             else:
                 body_bench = '<div class="kpi-value">N/A</div>'
             st.markdown(
-                f'<div class="card card-blue"><div class="kpi-label">Benchmark MSCI World'
+                f'<div class="card card-blue"><div class="kpi-label">MSCI World Réf.'
                 f'<span class="live-badge">LIVE</span></div>'
                 f'{body_bench}</div>', unsafe_allow_html=True)
 
-        # ── Tableau positions + donut ──────────────────────────────────────────
-        st.markdown("### 📊 Positions détaillées")
+        st.markdown("### 📊 Mes positions")
         col_t, col_p = st.columns([3, 2])
         with col_t:
             rows = []
@@ -1921,14 +2431,14 @@ class StreamlitUI:
                 vj_f   = f"{s(p2['var_jour_pct'])}{p2['var_jour_pct']:.2f}%" if p2["var_jour_pct"] else "–"
                 vje_f  = f"{s(p2['var_jour_eur'])}{p2['var_jour_eur']:,.2f}€" if p2["var_jour_eur"] else "–"
                 prix_f = f"{p2['prix']:.3f}€" if p2["prix"] else "N/A"
-                rows.append({"Position": p2["nom"], "Env.": p2["enveloppe"], "Prix live": prix_f,
+                rows.append({"Position": p2["nom"], "Env.": p2["enveloppe"], "Prix": prix_f,
                              "Valeur (€)": f"{p2['valeur']:,.2f}", "Perf.": perf_f,
                              "Δ Jour (%)": vj_f, "Δ Jour (€)": vje_f})
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
             if not mode_direct:
                 st.markdown(
-                    f'<div class="info-box">Ajust. patrimonial : +{ptf["ajustement_pat"]:,.2f}€ → '
-                    f'Solde total : <b>{ptf["solde_total"]:,.2f}€</b></div>', unsafe_allow_html=True)
+                    f'<div class="info-box">Ajustement patrimonial inclus : +{ptf["ajustement_pat"]:,.2f}€</div>',
+                    unsafe_allow_html=True)
         with col_p:
             donut = [p2 for p2 in ptf["positions"] if p2["valeur"] > 0]
             if donut:
@@ -1936,8 +2446,7 @@ class StreamlitUI:
                 fig_pie = go.Figure(go.Pie(
                     labels=[d["nom"] for d in donut], values=[d["valeur"] for d in donut],
                     hole=0.6, textinfo="percent",
-                    marker=dict(colors=colors_pie[:len(donut)],
-                                line=dict(color="#1C1F26", width=2)),
+                    marker=dict(colors=colors_pie[:len(donut)], line=dict(color="#1C1F26", width=2)),
                 ))
                 vt = ptf["valeur_totale"]
                 fig_pie.update_layout(
@@ -1947,11 +2456,11 @@ class StreamlitUI:
                         font=dict(size=13,color="#D4AF37",family="Space Mono"), showarrow=False)])
                 st.plotly_chart(fig_pie, use_container_width=True)
 
-    # ── EQUITY CURVE & SNAPSHOT ────────────────────────────────────────────────
+    # ── EQUITY CURVE ──────────────────────────────────────────────────────────
     def render_equity_curve_section(self, ptf: Dict, regime: Dict,
                                      unified_h: Dict, unified_a: Dict,
                                      positions_conf: List[Dict]):
-        st.markdown("## 📈 Equity Curve & Persistance")
+        st.markdown("## 📈 Historique de votre capital")
         col_eq, col_snap = st.columns([3, 1])
 
         history = self.pm.load_history()
@@ -1959,38 +2468,45 @@ class StreamlitUI:
             fig_eq = plot_equity_curve(history)
             if fig_eq:
                 st.plotly_chart(fig_eq, use_container_width=True, config={"displayModeBar": False})
+                st.markdown(
+                    '<div class="pedagogy-box">'
+                    '<div class="pedagogy-title">Ce que montre ce graphique</div>'
+                    'La ligne dorée représente l\'évolution réelle de votre capital jour après jour. '
+                    'La ligne bleue pointillée montre votre performance cumulée en %. '
+                    'Les zones colorées indiquent le régime de marché pendant chaque période.'
+                    '</div>', unsafe_allow_html=True)
             else:
                 st.markdown(
                     '<div class="card card-orange">'
-                    '<div class="kpi-label">Aucune donnée historique</div>'
-                    '<div class="small">Utilisez le bouton "Enregistrer Snapshot" pour démarrer '
-                    'le suivi de votre courbe d\'équité.</div></div>', unsafe_allow_html=True)
+                    '<div class="kpi-label">Aucun historique enregistré</div>'
+                    '<div class="small">Utilisez le bouton "📸 Enregistrer" à droite pour démarrer '
+                    'le suivi de votre capital. Faites-le chaque soir de bourse.</div></div>',
+                    unsafe_allow_html=True)
             if not history.empty:
                 perf_j, perf_c, base_cap = self.pm.compute_daily_performance(ptf["valeur_totale"])
                 mc1, mc2, mc3, mc4 = st.columns(4)
-                mc1.metric("Snapshots enregistrés", f"{len(history)}")
-                mc2.metric("Base J-1 (€)", f"{base_cap:,.2f}")
-                mc3.metric("Perf Jour (chaîné)", f"{perf_j:+.2f}%")
-                mc4.metric("Perf Cumul (chaîné)", f"{perf_c:+.2f}%")
+                mc1.metric("Jours enregistrés", f"{len(history)}")
+                mc2.metric("Base hier (€)", f"{base_cap:,.2f}")
+                mc3.metric("Perf du jour", f"{perf_j:+.2f}%")
+                mc4.metric("Perf totale", f"{perf_c:+.2f}%")
 
         with col_snap:
             st.markdown('<div class="card card-green">', unsafe_allow_html=True)
-            st.markdown("### 💾 Snapshot")
-            st.caption("Enregistre l'état du portefeuille.")
+            st.markdown("### 💾 Enregistrer")
+            st.caption("Sauvegardez l'état du portefeuille ce soir.")
 
-            vt      = ptf["valeur_totale"]
+            vt       = ptf["valeur_totale"]
             pj, pc, _ = self.pm.compute_daily_performance(vt)
-            poids_h = next((p["valeur"]/vt*100 for p in ptf["positions"] if p["nom"]=="Global Hydrogen" and vt>0), 0.0)
-            poids_em= next((p["valeur"]/vt*100 for p in ptf["positions"] if p["nom"]=="EM Asia" and vt>0), 0.0)
+            poids_h  = next((p["valeur"]/vt*100 for p in ptf["positions"] if p["nom"]=="Global Hydrogen" and vt>0), 0.0)
+            poids_em = next((p["valeur"]/vt*100 for p in ptf["positions"] if p["nom"]=="EM Asia" and vt>0), 0.0)
 
             st.markdown(f"""
 <div style="font-size:.82rem;color:#6B7585;line-height:1.8;">
-<b>Valeur :</b> {vt:,.2f}€<br>
-<b>Perf J :</b> {pj:+.2f}%<br>
-<b>Perf Cumul :</b> {pc:+.2f}%<br>
+<b>Capital :</b> {vt:,.2f}€<br>
+<b>Aujourd'hui :</b> {pj:+.2f}%<br>
+<b>Total :</b> {pc:+.2f}%<br>
 <b>Régime :</b> {regime["confirmed_label"]}<br>
-<b>Poids H₂ :</b> {poids_h:.1f}%<br>
-<b>Poids EM :</b> {poids_em:.1f}%
+<b>H₂ :</b> {poids_h:.1f}% | <b>EM :</b> {poids_em:.1f}%
 </div>""", unsafe_allow_html=True)
 
             if st.button("📸 Enregistrer Snapshot", use_container_width=True, type="primary"):
@@ -2002,340 +2518,385 @@ class StreamlitUI:
                     poids_h=round(poids_h, 4), poids_em=round(poids_em, 4)
                 )
                 if ok:
-                    st.success("✅ Snapshot sauvegardé" +
-                               (" + GitHub Gist" if self.pm.status == "github" else " (SQLite)"))
+                    st.success("✅ Enregistré" +
+                               (" + GitHub" if self.pm.status == "github" else ""))
                     st.cache_data.clear()
                     st.rerun()
                 else:
-                    st.error("❌ Échec de sauvegarde")
+                    st.error("❌ Échec")
 
             if not history.empty:
                 st.markdown("---")
-                st.markdown(f'<div class="small">Dernier snapshot : {history["date"].iloc[-1]}</div>',
+                st.markdown(f'<div class="small">Dernier : {history["date"].iloc[-1]}</div>',
                             unsafe_allow_html=True)
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── RISK DASHBOARD ─────────────────────────────────────────────────────────
-    def render_risk_dashboard(self, ptf: Dict):
-        st.markdown("## ⚠️ Risk Dashboard")
-        col_corr, col_rc = st.columns(2)
+    # ── LEADERSHIP COMPARISON (NOUVEAU v5.3) ──────────────────────────────────
+    def render_leadership_comparison(self, nom: str, ticker: str,
+                                      color_sat: str = "#D4AF37"):
+        """
+        Section pédagogique centrale v5.3 :
+        Graphique barres 5 semaines + verdict automatique en langage simple.
+        """
+        st.markdown(f"### 📊 {nom} vs MSCI World — Leadership hebdomadaire")
 
-        # Tickers avec valeur > 0
-        tickers_ptf  = ["ANRJ.PA", "AASI.PA", "MWRD.PA", "OR-EUR.PA"]
-        positions_map = {p["nom"]: p for p in ptf["positions"]}
-        vt = ptf["valeur_totale"]
+        with st.container():
+            st.markdown(
+                '<div class="leadership-header">'
+                '<div style="font-size:.8rem;color:#6B7585;margin-bottom:.3rem;">POURQUOI CE GRAPHIQUE EST IMPORTANT</div>'
+                '<div style="color:#E2E8F0;line-height:1.6;">'
+                'Ce graphique compare chaque semaine la performance de votre ETF vs le MSCI World. '
+                '<b>Si l\'ETF fait régulièrement moins bien que le World</b>, il perd sa raison d\'être '
+                'dans votre portefeuille — autant acheter du MSCI World pur et simple.'
+                '</div>'
+                '</div>', unsafe_allow_html=True)
 
-        # Matrice de corrélation
-        with col_corr:
-            st.markdown('<div class="card card-blue">', unsafe_allow_html=True)
-            corr_df = self.qre.correlation_matrix(tickers_ptf, 60)
-            if corr_df is not None:
-                fig_c = plot_correlation_heatmap(corr_df)
-                st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False})
+            labels, sat_perfs, world_perfs = self.pde.get_weekly_performances(self.dm, ticker)
+
+            if labels and sat_perfs and world_perfs:
+                col_chart, col_verdict = st.columns([2, 1])
+
+                with col_chart:
+                    fig = plot_weekly_leadership(labels, sat_perfs, world_perfs, nom, color_sat)
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+                with col_verdict:
+                    # Calcul des écarts
+                    gaps = [s - w for s, w in zip(sat_perfs, world_perfs)]
+
+                    # Tableau résumé
+                    st.markdown('<div class="kpi-label">COMPARAISON SEMAINE PAR SEMAINE</div>', unsafe_allow_html=True)
+                    rows_lead = []
+                    for i, (lbl, s_p, w_p) in enumerate(zip(labels, sat_perfs, world_perfs)):
+                        gap = s_p - w_p
+                        winner = f"🟢 +{gap:.1f}% {nom[:6]}" if gap > 0 else f"🔴 {gap:.1f}% World"
+                        rows_lead.append({"Semaine": lbl,
+                                          f"{nom[:8]}": f"{s_p:+.1f}%",
+                                          "World": f"{w_p:+.1f}%",
+                                          "Résultat": winner})
+                    st.dataframe(pd.DataFrame(rows_lead), use_container_width=True, hide_index=True)
+
+                    # Verdict pédagogique
+                    verdict = self.pde.translate_leadership(nom, gaps)
+                    level_color = {"green": "#22C55E", "orange": "#F97316", "red": "#FF3131"}.get(verdict["level"], "#6B7585")
+                    level_bg    = {"green": "rgba(34,197,94,.1)", "orange": "rgba(249,115,22,.1)", "red": "rgba(255,49,49,.1)"}.get(verdict["level"], "rgba(107,117,133,.1)")
+
+                    st.markdown(
+                        f'<div style="background:{level_bg};border:1px solid {level_color};'
+                        f'border-radius:10px;padding:1rem;margin-top:.5rem;">'
+                        f'<div style="font-weight:700;font-size:1rem;color:{level_color};">'
+                        f'{verdict["message"]}</div>'
+                        f'<div style="font-size:.8rem;color:#8892AA;margin:.4rem 0;">{verdict["detail"]}</div>'
+                        f'<div style="font-size:.85rem;color:#CBD5E1;margin-top:.5rem;">'
+                        f'💡 {verdict["action"]}</div>'
+                        f'</div>', unsafe_allow_html=True)
             else:
-                st.info("Données insuffisantes pour la corrélation (< 60j).")
-            st.markdown('</div>', unsafe_allow_html=True)
+                st.info("Données hebdomadaires insuffisantes. Revenez après quelques semaines de données.")
 
-        # Risk Contribution
-        with col_rc:
-            st.markdown('<div class="card card-blue">', unsafe_allow_html=True)
-            weights_ptf = []
-            valid_tk    = []
-            for tk in tickers_ptf:
-                df = self.dm.data.get(tk, pd.DataFrame())
-                if not df.empty:
-                    nom = next((p["nom"] for p in ptf["positions"] if p.get("ticker") == tk), "")
-                    val = positions_map.get(nom, {}).get("valeur", 0.0)
-                    valid_tk.append(tk)
-                    weights_ptf.append(val)
-            if valid_tk and sum(weights_ptf) > 0:
-                rc = self.qre.risk_contribution(valid_tk, weights_ptf, 60)
-                if rc:
-                    fig_rc = plot_risk_contribution(rc)
-                    if fig_rc:
-                        st.plotly_chart(fig_rc, use_container_width=True, config={"displayModeBar": False})
-                    # Flags
-                    flags = [tk for tk, v in rc.items() if v["flag"]]
-                    if flags:
-                        short = {"ANRJ.PA": "H₂", "AASI.PA": "EM Asia",
-                                 "MWRD.PA": "MSCI World", "OR-EUR.PA": "Or"}
-                        f_names = ", ".join([short.get(f, f) for f in flags])
-                        st.markdown(
-                            f'<div class="alert-box">🚨 <b>Concentration de risque</b> : '
-                            f'{f_names} contribue > 40% du risque total → Recalibrer les poids.</div>',
-                            unsafe_allow_html=True)
-                else:
-                    st.info("Calcul risk contribution indisponible.")
-            st.markdown('</div>', unsafe_allow_html=True)
+    # ── RISK DASHBOARD PÉDAGOGIQUE (v5.3 enrichi) ────────────────────────────
+    def render_risk_dashboard(self, ptf: Dict):
+        st.markdown("## ⚠️ Gestion des risques")
 
-        # ── Métriques de risque par actif ─────────────────────────────────────
-        st.markdown("### 📐 Métriques de Risque Individuelles")
-        risk_cols = st.columns(4)
-        for i, (tk, lbl) in enumerate([("ANRJ.PA","H₂ Hydrogen"),("AASI.PA","EM Asia"),
-                                        ("MWRD.PA","MSCI World"),("OR-EUR.PA","Or")]):
-            with risk_cols[i]:
+        # Section pédagogique intro
+        with st.expander("❓ Comment lire les indicateurs de risque ?", expanded=False):
+            st.markdown("""
+<div class="pedagogy-box">
+<div class="pedagogy-title">Guide de lecture des risques</div>
+<b>Agitation (Volatilité)</b> : mesure les oscillations quotidiennes de l'ETF.
+Plus c'est élevé, plus l'ETF peut monter OU baisser brutalement.<br><br>
+<b>Sensibilité (Beta)</b> : si le marché mondial baisse de 10% et que le Beta est 1.5,
+votre ETF peut baisser de 15%. Plus le Beta est élevé, plus le risque est amplifié.<br><br>
+<b>Recul depuis le sommet (Drawdown)</b> : indique à quelle distance du dernier pic
+se trouve l'ETF. -20% signifie qu'il a perdu 20% depuis son sommet récent.
+</div>
+""", unsafe_allow_html=True)
+
+        # Métriques de risque pédagogiques pour chaque actif
+        st.markdown("### 🔍 Analyse de risque par ETF")
+        risk_assets = [
+            ("ANRJ.PA", "Hydrogen", "#F97316"),
+            ("AASI.PA", "EM Asia", "#6366F1"),
+            ("MWRD.PA", "MSCI World", "#007BFF"),
+            ("OR-EUR.PA", "Or Physique", "#D4AF37"),
+        ]
+
+        cols = st.columns(4)
+        for i, (tk, name, color) in enumerate(risk_assets):
+            with cols[i]:
                 vol   = self.qre.rolling_volatility(tk, 30)
                 beta  = self.qre.rolling_beta(tk)
                 dd    = self.qre.drawdown_metrics(tk, 252)
+
+                vol_t  = self.pde.translate_volatility(vol, name)
+                beta_t = self.pde.translate_beta(beta, name)
+                dd_t   = self.pde.translate_drawdown(
+                    dd.get("current_dd"), dd.get("max_dd"), name)
+
+                level_colors = {"green": "#22C55E", "orange": "#F97316", "red": "#FF3131"}
+
                 st.markdown(
-                    f'<div class="card">'
-                    f'<div class="kpi-label">{lbl}</div>'
-                    f'<div style="display:grid;gap:.4rem;margin-top:.5rem;">'
-                    f'<div style="display:flex;justify-content:space-between;font-size:.82rem;">'
-                    f'<span style="color:#6B7585;">Vol 30j (ann.)</span>'
-                    f'<span style="color:{"#FF3131" if vol and vol>0.25 else "#22C55E" if vol and vol<0.15 else "#F97316"};font-weight:700;">'
-                    f'{"N/A" if vol is None else f"{vol*100:.1f}%"}</span></div>'
-                    f'<div style="display:flex;justify-content:space-between;font-size:.82rem;">'
-                    f'<span style="color:#6B7585;">Beta (60j)</span>'
-                    f'<span style="color:#CBD5E1;font-weight:600;">'
-                    f'{"N/A" if beta is None else f"{beta:.2f}"}</span></div>'
-                    f'<div style="display:flex;justify-content:space-between;font-size:.82rem;">'
-                    f'<span style="color:#6B7585;">DD courant</span>'
-                    f'<span style="color:{"#FF3131" if dd["current_dd"] and dd["current_dd"]<-5 else "#F97316" if dd["current_dd"] and dd["current_dd"]<-2 else "#22C55E"};font-weight:600;">'
-                    f'{"N/A" if dd["current_dd"] is None else f"{dd["current_dd"]:+.1f}%"}</span></div>'
-                    f'<div style="display:flex;justify-content:space-between;font-size:.82rem;">'
-                    f'<span style="color:#6B7585;">Max DD (252j)</span>'
-                    f'<span style="color:#FCA5A5;font-weight:600;">'
-                    f'{"N/A" if dd["max_dd"] is None else f"{dd["max_dd"]:.1f}%"}</span></div>'
+                    f'<div class="card" style="border-top:3px solid {color};">'
+                    f'<div class="kpi-label">{name}</div>',
+                    unsafe_allow_html=True)
+
+                # Volatilité
+                vc = level_colors[vol_t["level"]]
+                st.markdown(
+                    f'<div class="pedago-metric">'
+                    f'<div class="pedago-metric-title">Agitation (Volatilité)</div>'
+                    f'<div class="pedago-metric-value" style="color:{vc};">'
+                    f'{vol_t["emoji"]} {vol_t["value"]}</div>'
+                    f'<div class="pedago-metric-explain">{vol_t["explain"].split(chr(10))[0]}</div>'
+                    f'</div>', unsafe_allow_html=True)
+
+                # Beta
+                bc = level_colors[beta_t["level"]]
+                beta_explain_short = beta_t["explain"][:80] + "..." if len(beta_t["explain"]) > 80 else beta_t["explain"]
+                st.markdown(
+                    f'<div class="pedago-metric">'
+                    f'<div class="pedago-metric-title">Sensibilité au marché (Beta)</div>'
+                    f'<div class="pedago-metric-value" style="color:{bc};">'
+                    f'{beta_t["emoji"]} {beta_t["value"]}</div>'
+                    f'<div class="pedago-metric-explain">{beta_explain_short}</div>'
+                    f'</div>', unsafe_allow_html=True)
+
+                # Drawdown
+                dc = level_colors[dd_t["level"]]
+                st.markdown(
+                    f'<div class="pedago-metric">'
+                    f'<div class="pedago-metric-title">Recul depuis le sommet</div>'
+                    f'<div class="pedago-metric-value" style="color:{dc};">'
+                    f'{dd_t["emoji"]} {dd_t["value"]}</div>'
+                    f'<div class="pedago-metric-explain">{dd_t["explain"][:80]}...</div>'
+                    f'</div>', unsafe_allow_html=True)
+
+                st.markdown('</div>', unsafe_allow_html=True)
+
+        # Corrélation et Risk Contribution (expert, section réduite)
+        with st.expander("🔬 Analyse experte : Corrélation & Contribution au risque", expanded=False):
+            col_corr, col_rc = st.columns(2)
+            tickers_ptf  = ["ANRJ.PA", "AASI.PA", "MWRD.PA", "OR-EUR.PA"]
+            positions_map = {p["nom"]: p for p in ptf["positions"]}
+            vt = ptf["valeur_totale"]
+
+            with col_corr:
+                corr_df = self.qre.correlation_matrix(tickers_ptf, 60)
+                if corr_df is not None:
+                    fig_c = plot_correlation_heatmap(corr_df)
+                    st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False})
+                    st.markdown(
+                        '<div class="pedagogy-box">'
+                        'Une corrélation proche de +1 signifie que les deux ETFs bougent ensemble. '
+                        'Idéalement, vos actifs ne devraient pas tous monter et baisser en même temps.'
+                        '</div>', unsafe_allow_html=True)
+                else:
+                    st.info("Données insuffisantes (< 60j).")
+
+            with col_rc:
+                weights_ptf, valid_tk = [], []
+                for tk in tickers_ptf:
+                    df = self.dm.data.get(tk, pd.DataFrame())
+                    if not df.empty:
+                        nom = next((p["nom"] for p in ptf["positions"] if p.get("ticker") == tk), "")
+                        val = positions_map.get(nom, {}).get("valeur", 0.0)
+                        valid_tk.append(tk)
+                        weights_ptf.append(val)
+                if valid_tk and sum(weights_ptf) > 0:
+                    rc = self.qre.risk_contribution(valid_tk, weights_ptf, 60)
+                    if rc:
+                        fig_rc = plot_risk_contribution(rc)
+                        if fig_rc:
+                            st.plotly_chart(fig_rc, use_container_width=True, config={"displayModeBar": False})
+                        flags = [tk for tk, v in rc.items() if v["flag"]]
+                        if flags:
+                            short = {"ANRJ.PA": "Hydrogen", "AASI.PA": "EM Asia",
+                                     "MWRD.PA": "MSCI World", "OR-EUR.PA": "Or"}
+                            f_names = ", ".join([short.get(f, f) for f in flags])
+                            st.markdown(
+                                f'<div class="alert-box">🚨 <b>Trop de risque concentré</b> : '
+                                f'{f_names} représente plus de 40% du risque total. '
+                                f'Rééquilibrez les poids.</div>', unsafe_allow_html=True)
+
+    # ── SATELLITE CARD PÉDAGOGIQUE (v5.3) ─────────────────────────────────────
+    def render_satellite_card_pedagogic(self, nom: str, ticker: str,
+                                         unified: Dict, target_weight: Dict,
+                                         regime: Dict, sent_rows: List[Dict],
+                                         sector: str):
+        """
+        Carte satellite pédagogique v5.3 — 4 sections :
+        1. Score simplifié 0-5 avec étoiles
+        2. Leadership hebdomadaire (nouveau)
+        3. Risques traduits en humain
+        4. Action recommandée
+        """
+        color_map = {"hydrogen": "#F97316", "em_asia": "#6366F1"}
+        color = color_map.get(sector, "#D4AF37")
+
+        # Score stratégique complet
+        strat_full = self.se.compute(ticker, unified, regime)
+        simple_score = self.pde.translate_simple_score(unified["total"])
+
+        # En-tête carte
+        st.markdown(f'<div class="card" style="border-top:3px solid {color};padding:0;overflow:hidden;">', unsafe_allow_html=True)
+
+        # Ligne 1 : Score + Action
+        c_score, c_action = st.columns([2, 3])
+
+        with c_score:
+            st.markdown(
+                f'<div style="padding:1.4rem 1.4rem .8rem 1.4rem;">'
+                f'<div class="kpi-label">{nom} — Score Global</div>'
+                f'<div class="simple-score-ring {simple_score["ring_cls"]}" style="margin:1rem auto;">'
+                f'{strat_full["total"]}/5'
+                f'</div>'
+                f'<div style="text-align:center;margin:.4rem 0;">'
+                f'<span style="font-size:1.3rem;">{simple_score["stars"]}</span>'
+                f'</div>'
+                f'<div style="text-align:center;font-weight:700;color:#E2E8F0;font-size:.95rem;">'
+                f'{simple_score["label"]}</div>'
+                f'<div style="text-align:center;font-size:.82rem;color:#8892AA;margin-top:.3rem;">'
+                f'{simple_score["explain"]}</div>'
+                f'</div>', unsafe_allow_html=True)
+
+        with c_action:
+            st.markdown('<div style="padding:1.4rem 1.4rem .8rem 1.4rem;">', unsafe_allow_html=True)
+            st.markdown('<div class="kpi-label">Les 5 critères d\'analyse</div>', unsafe_allow_html=True)
+
+            for detail in strat_full["details"]:
+                icon  = "✅" if detail["score"] == 1 else "❌"
+                clr   = "#86EFAC" if detail["score"] == 1 else "#FCA5A5"
+                st.markdown(
+                    f'<div style="display:flex;align-items:flex-start;gap:.5rem;'
+                    f'margin:.3rem 0;font-size:.84rem;">'
+                    f'<span style="font-size:1rem;flex-shrink:0;">{icon}</span>'
+                    f'<div>'
+                    f'<span style="color:{clr};font-weight:700;">{detail["dim"]}</span>'
+                    f'<span style="color:#6B7585;margin-left:.4rem;font-size:.78rem;">{detail["value"]}</span>'
+                    f'<br><span style="color:#8892AA;font-size:.78rem;">{detail["label"]}</span>'
                     f'</div></div>', unsafe_allow_html=True)
 
-    # ── SATELLITE CARD v5.2 (3 colonnes) ──────────────────────────────────────
-    def render_satellite_card(self, nom: str, ticker: str,
-                               unified: Dict, target_weight: Dict,
-                               regime: Dict):
-        """
-        3 colonnes :
-        1. Score Stratégique (Unifié v4.1 + 4 composantes v5.2)
-        2. Jauges de Risque (Vol, Beta, Drawdown)
-        3. Action (go.Indicator Poids Actuel vs Cible)
-        """
-        total = unified["total"]
-        if total >= 3:   score_cls, card_cls = "score-pos",  "card-gold"
-        elif total >= 0: score_cls, card_cls = "score-neut", "card-orange"
-        else:            score_cls, card_cls = "score-neg",  "card-red"
+            st.markdown('</div>', unsafe_allow_html=True)
 
-        status_label, status_cls = self._get_status_label(total)
-        s4c = target_weight.get("strat4c", {})
+        st.markdown('</div>', unsafe_allow_html=True)  # close card
 
-        st.markdown(f'<div class="card {card_cls}" style="padding:0;overflow:hidden;">', unsafe_allow_html=True)
-        col1, col2, col3 = st.columns([1.2, 0.9, 0.9])
-
-        # ── Colonne 1 : Score Stratégique ────────────────────────────────────
-        with col1:
-            sign = "+" if total > 0 else ""
-            st.markdown(
-                f'<div style="padding:1.4rem;">'
-                f'<div class="kpi-label">{nom} — Score Stratégique</div>'
-                f'<div style="margin:.4rem 0 .8rem 0;">'
-                f'<span class="score-badge {score_cls}">{sign}{total}/4</span></div>',
-                unsafe_allow_html=True)
-
-            # Tableau 3 couches v4.1
-            badge_map = {"bull": "BULL", "neut": "NEUTRE", "bear": "BEAR"}
-            rows_html = ""
-            for layer in unified["details"]:
-                vs   = f"{'+' if layer['score']>0 else ''}{layer['score']}" if layer['score']!=0 else "0"
-                clr  = "#22C55E" if layer['score']>0 else "#FF3131" if layer['score']<0 else "#6B7585"
-                rows_html += (
-                    f'<tr><td class="col-name">{layer["name"]}</td>'
-                    f'<td class="col-badge"><span class="bg-{layer["badge"]}">'
-                    f'{badge_map[layer["badge"]]}</span></td>'
-                    f'<td class="col-val"><span style="color:{clr};">{vs}</span>'
-                    f' <span style="color:#6B7585;font-size:.75rem;">— {layer["desc"]}</span>'
-                    f'</td></tr>'
-                )
-            st.markdown(
-                f'<table class="score-table"><thead><tr>'
-                f'<th>CRITÈRE</th><th style="text-align:center">SIGNAL</th><th>VALEUR</th>'
-                f'</tr></thead><tbody>{rows_html}</tbody></table>',
-                unsafe_allow_html=True)
-
-            # Score 4 composantes v5.2 (si disponible)
-            if s4c:
-                st.markdown('<div style="margin-top:.8rem;"><div class="kpi-label" style="margin-top:.5rem;">Score Stratégique 4C (v5.2)</div>', unsafe_allow_html=True)
-                comp_names = {"trend": "Trend", "macro": "Macro/Rég.", "leadership": "Leadership", "risk_vol": "Risque/Vol"}
-                comp_w     = {"trend": 25, "macro": 30, "leadership": 25, "risk_vol": 20}
-                for key, lbl in comp_names.items():
-                    v   = s4c.get(key, 0)
-                    w   = comp_w[key]
-                    clr = "#22C55E" if v > 0.1 else "#FF3131" if v < -0.1 else "#F97316"
-                    bar_w = abs(v) * 50
-                    bar_clr = "#22C55E" if v >= 0 else "#FF3131"
-                    st.markdown(
-                        f'<div style="display:flex;align-items:center;gap:.5rem;margin:.2rem 0;font-size:.78rem;">'
-                        f'<span style="color:#6B7585;width:80px;">{lbl} ({w}%)</span>'
-                        f'<div style="background:#2E3340;border-radius:4px;height:6px;width:80px;position:relative;">'
-                        f'<div style="position:absolute;{"right:50%" if v<0 else "left:50%"};'
-                        f'width:{bar_w}px;height:6px;background:{bar_clr};border-radius:4px;"></div>'
-                        f'<div style="position:absolute;left:50%;width:1px;height:6px;background:#6B7585;"></div>'
-                        f'</div>'
-                        f'<span style="color:{clr};font-weight:700;font-family:Space Mono;font-size:.72rem;">'
-                        f'{v:+.2f}</span></div>', unsafe_allow_html=True)
-                tot4c = s4c.get("total", 0)
-                tc_clr = "#22C55E" if tot4c > 0.1 else "#FF3131" if tot4c < -0.1 else "#F97316"
-                st.markdown(
-                    f'<div style="font-size:.8rem;margin-top:.4rem;font-family:Space Mono;'
-                    f'color:{tc_clr};font-weight:700;">Score total : {tot4c:+.2f}/1</div></div>',
-                    unsafe_allow_html=True)
-
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        # ── Colonne 2 : Jauges de Risque ─────────────────────────────────────
-        with col2:
-            st.markdown('<div style="padding:1.4rem;">', unsafe_allow_html=True)
-            st.markdown('<div class="kpi-label">Jauges de Risque</div>', unsafe_allow_html=True)
-
-            vol  = self.qre.rolling_volatility(ticker, 30)
-            beta = self.qre.rolling_beta(ticker)
-            dd   = self.qre.drawdown_metrics(ticker, 252)
-
-            def _risk_row(label, value, unit, warn_hi, bad_hi, reverse=False):
-                if value is None:
-                    cls_, v_ = "risk-ok", "N/A"
-                else:
-                    is_bad  = value > bad_hi if not reverse else value < bad_hi
-                    is_warn = value > warn_hi if not reverse else value < warn_hi
-                    cls_ = "risk-flag" if is_bad or is_warn else "risk-ok"
-                    v_   = f"{value:.2f}{unit}"
-                st.markdown(
-                    f'<div style="display:flex;justify-content:space-between;align-items:center;'
-                    f'margin:.4rem 0;font-size:.82rem;">'
-                    f'<span style="color:#6B7585;">{label}</span>'
-                    f'<span class="{cls_}">{v_}</span></div>',
-                    unsafe_allow_html=True)
-
-            _risk_row("Vol 30j ann.",     vol * 100 if vol else None,     "%", 20.0, 30.0)
-            _risk_row("Beta 60j",         beta,                           "",   1.3,  1.8)
-            _risk_row("DD Courant",       abs(dd["current_dd"]) if dd["current_dd"] else None, "%", 5.0, 10.0)
-            _risk_row("Max DD (252j)",    abs(dd["max_dd"]) if dd["max_dd"] else None,          "%", 15.0, 25.0)
-
-            # Régime multiplier
-            rm  = target_weight.get("regime_mult", 1.0)
-            cf  = target_weight.get("confidence", 1.0)
-            rmc = "#22C55E" if rm >= 1.0 else "#F97316" if rm >= 0.7 else "#FF3131"
-            cfc = "#22C55E" if cf >= 0.9 else "#F97316" if cf >= 0.75 else "#FF3131"
-            st.markdown("<div style='margin-top:.8rem;'>", unsafe_allow_html=True)
-            st.markdown(
-                f'<div style="display:flex;justify-content:space-between;font-size:.78rem;margin:.2rem 0;">'
-                f'<span style="color:#6B7585;">Rég. Multiplier</span>'
-                f'<span style="color:{rmc};font-weight:700;">{rm:.2f}×</span></div>'
-                f'<div style="display:flex;justify-content:space-between;font-size:.78rem;margin:.2rem 0;">'
-                f'<span style="color:#6B7585;">Confidence Factor</span>'
-                f'<span style="color:{cfc};font-weight:700;">{cf:.2f}</span></div>',
-                unsafe_allow_html=True)
-            st.markdown("</div></div>", unsafe_allow_html=True)
-
-        # ── Colonne 3 : Action go.Indicator ──────────────────────────────────
-        with col3:
-            st.markdown('<div style="padding:1.4rem;">', unsafe_allow_html=True)
-            st.markdown('<div class="kpi-label">Allocation Cible</div>', unsafe_allow_html=True)
-
-            cur_pct = target_weight.get("current_pct", 0.0)
-            tgt_pct = target_weight.get("target_pct", 0.0)
-            action  = target_weight.get("action", "MAINTENIR")
-            delta_e = target_weight.get("delta_eur", 0.0)
-
-            fig_w = plot_weight_indicator(cur_pct, tgt_pct)
-            st.plotly_chart(fig_w, use_container_width=True, config={"displayModeBar": False})
-
-            # Verdict
-            if action == "RÉDUIRE":
-                st.markdown(
-                    f'<div class="arb-sell">'
-                    f'<div style="font-size:.72rem;color:#FF3131;letter-spacing:1px;">🚨 ACTION</div>'
-                    f'<div style="font-size:1.1rem;color:#FCA5A5;font-weight:700;">RÉDUIRE {abs(delta_e):,.0f}€</div>'
-                    f'<div style="font-size:.75rem;color:#8892AA;">{cur_pct:.1f}% → {tgt_pct:.1f}%</div>'
-                    f'</div>', unsafe_allow_html=True)
-            elif action == "RENFORCER":
-                st.markdown(
-                    f'<div class="arb-buy">'
-                    f'<div style="font-size:.72rem;color:#22C55E;letter-spacing:1px;">💡 OPPORTUNITÉ</div>'
-                    f'<div style="font-size:1.1rem;color:#86EFAC;font-weight:700;">RENFORCER {abs(delta_e):,.0f}€</div>'
-                    f'<div style="font-size:.75rem;color:#8892AA;">{cur_pct:.1f}% → {tgt_pct:.1f}%</div>'
-                    f'</div>', unsafe_allow_html=True)
-            else:
-                st.markdown(
-                    f'<div class="arb-neutral">'
-                    f'<div style="font-size:.72rem;color:#6B7585;">✅ STATU QUO</div>'
-                    f'<div style="font-size:1.1rem;color:#CBD5E1;font-weight:600;">MAINTENIR</div>'
-                    f'<div style="font-size:.75rem;color:#8892AA;">{cur_pct:.1f}% ≈ {tgt_pct:.1f}%</div>'
-                    f'</div>', unsafe_allow_html=True)
-
-            # Verdict structuré
-            st.markdown(
-                f'<div style="background:#1C1F26;border:1px solid #2E3340;border-radius:8px;'
-                f'padding:.6rem;margin-top:.6rem;font-size:.76rem;font-family:Space Mono,monospace;">'
-                f'<span style="color:#6B7585;">Actuel :</span> {cur_pct:.1f}%<br>'
-                f'<span style="color:#6B7585;">Cible  :</span> <span style="color:#D4AF37;">{tgt_pct:.1f}%</span><br>'
-                f'<span style="color:#6B7585;">Δ      :</span> {self._sign(delta_e)}{delta_e:,.0f}€</div>',
-                unsafe_allow_html=True)
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)  # close card
-
-        # Verdict décisionnel v4.1 + Alpha Bars + Perf Relative
+        # Verdict global
         st.markdown(
-            f'<div style="text-align:center;margin:.5rem 0;">'
-            f'<div class="{status_cls}" style="display:inline-block;min-width:300px;">'
-            f'{status_label}</div></div>', unsafe_allow_html=True)
+            f'<div class="{strat_full["verdict_cls"]} verdict-card">'
+            f'{strat_full["verdict"]}'
+            f'<div style="font-size:.82rem;margin-top:.4rem;opacity:.9;">'
+            f'💡 {simple_score["action"]}</div>'
+            f'</div>', unsafe_allow_html=True)
 
-        fig_a = plot_alpha_bars(self.dm, ticker, nom)
-        if fig_a:
-            st.plotly_chart(fig_a, use_container_width=True, config={"displayModeBar": False})
-        fig_r = plot_relative_perf(self.dm, ticker, nom)
-        if fig_r:
-            st.plotly_chart(fig_r, use_container_width=True, config={"displayModeBar": False})
+        # Leadership hebdomadaire (NOUVEAU v5.3)
+        self.render_leadership_comparison(nom, ticker, color)
 
-    @staticmethod
-    def _get_status_label(score: int) -> Tuple[str, str]:
-        if score >= 3:   return "MAINTIEN TOTAL",         "status-maintain"
-        elif score >= 1: return "ALLÈGEMENT LÉGER",       "status-lighten"
-        elif score >= -1:return "VIGILANCE",              "status-vigilance"
-        elif score >= -2:return "RÉDUCTION PARTIELLE",    "status-reduce"
-        else:            return "SORTIE / RÉDUCTION FORTE","status-exit"
+        # Alertes sentinelles pédagogiques
+        sent_verdict = self.pde.translate_sentinelles(sent_rows, sector)
+        lv_color = {"green": "#22C55E", "orange": "#F97316", "red": "#FF3131"}.get(sent_verdict["level"], "#6B7585")
+        lv_bg    = {"green": "rgba(34,197,94,.1)", "orange": "rgba(249,115,22,.1)", "red": "rgba(255,49,49,.1)"}.get(sent_verdict["level"], "rgba(107,117,133,.1)")
 
-    # ── SENTINELLES & MACRO (v4.1 préservé) ───────────────────────────────────
+        st.markdown(
+            f'<div style="background:{lv_bg};border-left:4px solid {lv_color};'
+            f'border-radius:8px;padding:.8rem 1rem;margin:.5rem 0;">'
+            f'<b>Santé du secteur :</b> {sent_verdict["emoji"]} {sent_verdict["message"]}<br>'
+            f'<span style="font-size:.82rem;color:#8892AA;">{sent_verdict["detail"]}</span><br>'
+            f'<span style="font-size:.84rem;color:#CBD5E1;">💡 {sent_verdict["action"]}</span>'
+            f'</div>', unsafe_allow_html=True)
+
+        # Allocation cible
+        with st.expander("⚙️ Allocation cible & ajustement", expanded=False):
+            col_gauge, col_detail = st.columns([1, 2])
+            with col_gauge:
+                cur_pct = target_weight.get("current_pct", 0.0)
+                tgt_pct = target_weight.get("target_pct", 0.0)
+                fig_w = plot_weight_indicator(cur_pct, tgt_pct)
+                st.plotly_chart(fig_w, use_container_width=True, config={"displayModeBar": False})
+
+            with col_detail:
+                action    = target_weight.get("action", "MAINTENIR")
+                delta_e   = target_weight.get("delta_eur", 0.0)
+                cur_pct   = target_weight.get("current_pct", 0.0)
+                tgt_pct   = target_weight.get("target_pct", 0.0)
+
+                if action == "RÉDUIRE":
+                    st.markdown(
+                        f'<div class="arb-sell">'
+                        f'<div style="font-size:.72rem;color:#FF3131;letter-spacing:1px;">🚨 ACTION RECOMMANDÉE</div>'
+                        f'<div style="font-size:1.1rem;color:#FCA5A5;font-weight:700;">VENDRE {abs(delta_e):,.0f}€</div>'
+                        f'<div style="font-size:.82rem;color:#8892AA;margin-top:.3rem;">'
+                        f'Votre position est trop importante ({cur_pct:.1f}%) par rapport à la cible '
+                        f'({tgt_pct:.1f}%). Réduire protège votre portefeuille.</div>'
+                        f'</div>', unsafe_allow_html=True)
+                elif action == "RENFORCER":
+                    st.markdown(
+                        f'<div class="arb-buy">'
+                        f'<div style="font-size:.72rem;color:#22C55E;letter-spacing:1px;">💡 OPPORTUNITÉ</div>'
+                        f'<div style="font-size:1.1rem;color:#86EFAC;font-weight:700;">ACHETER {abs(delta_e):,.0f}€</div>'
+                        f'<div style="font-size:.82rem;color:#8892AA;margin-top:.3rem;">'
+                        f'Vous êtes en dessous de la cible ({cur_pct:.1f}% vs {tgt_pct:.1f}%). '
+                        f'Renforcer si les conditions locales le permettent.</div>'
+                        f'</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown(
+                        f'<div class="arb-neutral">'
+                        f'<div style="font-size:.72rem;color:#6B7585;">✅ SITUATION ÉQUILIBRÉE</div>'
+                        f'<div style="font-size:1.1rem;color:#CBD5E1;font-weight:600;">MAINTENIR</div>'
+                        f'<div style="font-size:.82rem;color:#8892AA;margin-top:.3rem;">'
+                        f'Position à {cur_pct:.1f}% — objectif {tgt_pct:.1f}%. Pas d\'ajustement nécessaire.</div>'
+                        f'</div>', unsafe_allow_html=True)
+
+                st.markdown(
+                    f'<div style="margin-top:.8rem;font-size:.8rem;color:#6B7585;">'
+                    f'Régime actuel : <b style="color:#CBD5E1;">{target_weight.get("regime_label","N/A")}</b> '
+                    f'(Multiplicateur × {target_weight.get("regime_mult", 1.0):.2f})</div>',
+                    unsafe_allow_html=True)
+
+        # Alpha bars et perf relative (détail technique)
+        with st.expander(f"📐 Analyse technique détaillée — {nom}", expanded=False):
+            fig_a = plot_alpha_bars(self.dm, ticker, nom)
+            if fig_a:
+                st.plotly_chart(fig_a, use_container_width=True, config={"displayModeBar": False})
+                st.caption("Chaque barre = journée où l'ETF a fait mieux (vert) ou moins bien (rouge) que le MSCI World.")
+            fig_r = plot_relative_perf(self.dm, ticker, nom)
+            if fig_r:
+                st.plotly_chart(fig_r, use_container_width=True, config={"displayModeBar": False})
+                st.caption("Courbe au-dessus de 0 = l'ETF surperforme le World depuis le début du suivi.")
+
+    # ── SENTINELLES & MACRO ────────────────────────────────────────────────────
     def render_sentinelles_macro(self, ptf: Dict):
-        st.markdown("## 🛰️ Sentinelles & Flash Macro")
+        st.markdown("## 🛰️ Radar Sectoriel & Macro-économie")
         col_s, col_m = st.columns([3, 2])
 
         s_msg, s_col, sent_rows = self.pe.evaluate_sentinelles()
         with col_s:
             st.markdown('<div class="card card-blue">', unsafe_allow_html=True)
-            st.markdown("### 📡 Sentinelles sectorielles")
+            st.markdown("### 📡 Valeurs de référence sectorielles")
+            st.caption("Ces entreprises sont des indicateurs avancés de la santé de vos ETFs.")
             if "OK" in s_msg: st.success(s_msg)
             else:             st.warning(s_msg)
             st.dataframe(pd.DataFrame(sent_rows), use_container_width=True, hide_index=True)
 
             st.markdown("---")
-            st.markdown("#### ⚖️ Poids Satellites vs Cible")
-            vt       = ptf["valeur_totale"]
-            anrj_v   = next((p["valeur"] for p in ptf["positions"] if p["nom"]=="Global Hydrogen"), 0)
-            aasi_v   = next((p["valeur"] for p in ptf["positions"] if p["nom"]=="EM Asia"), 0)
-            poids_s  = (anrj_v + aasi_v) / vt * 100 if vt else 0
+            st.markdown("#### ⚖️ Poids Satellites actuels")
+            vt      = ptf["valeur_totale"]
+            anrj_v  = next((p["valeur"] for p in ptf["positions"] if p["nom"]=="Global Hydrogen"), 0)
+            aasi_v  = next((p["valeur"] for p in ptf["positions"] if p["nom"]=="EM Asia"), 0)
+            poids_s = (anrj_v + aasi_v) / vt * 100 if vt else 0
             delta_ps = poids_s - 45
-            st.metric("ANRJ + AASI", f"{poids_s:.1f}%",
-                      delta=f"{self._sign(delta_ps)}{delta_ps:.1f}% vs 45%")
+            st.metric("Hydrogen + EM Asia", f"{poids_s:.1f}%",
+                      delta=f"{self._sign(delta_ps)}{delta_ps:.1f}% vs objectif 45%")
             bc = "#FF3131" if poids_s > 45 else "#22C55E"
             st.markdown(
                 f'<div style="background:#1C1F26;border-radius:6px;height:8px;">'
                 f'<div style="background:{bc};width:{min(poids_s,100):.1f}%;height:8px;border-radius:6px;"></div>'
                 f'</div>', unsafe_allow_html=True)
-
-            st.markdown("#### 🎯 Cible 94% World / 6% Or")
-            vw = sum(p["valeur"] for p in ptf["positions"] if "MSCI World" in p["nom"])
-            vg = sum(p["valeur"] for p in ptf["positions"] if "Or" in p["nom"])
-            c_w, c_g = st.columns(2)
-            c_w.metric("MSCI World",  f"{vw/vt*100:.1f}%" if vt else "N/A",
-                       delta=f"{(vw/vt*100-94 if vt else 0):.1f}% vs 94%")
-            c_g.metric("Or Physique", f"{vg/vt*100:.1f}%" if vt else "N/A",
-                       delta=f"{(vg/vt*100-6 if vt else 0):.1f}% vs 6%")
             st.markdown('</div>', unsafe_allow_html=True)
 
         with col_m:
             st.markdown('<div class="card card-gold">', unsafe_allow_html=True)
-            st.markdown("### 🌍 Flash Macro <span class='live-badge'>LIVE</span>",
+            st.markdown("### 🌍 Indicateurs Macro <span class='live-badge'>LIVE</span>",
                         unsafe_allow_html=True)
+            st.caption("Ces données donnent le contexte économique mondial.")
             FMT = {"NQ=F":".2f","ES=F":".2f","^TNX":".3f","EURUSD=X":".4f",
                    "BZ=F":".2f","GC=F":".2f","DX-Y.NYB":".2f","MCHI":".2f"}
             SFX = {"^TNX":"%","BZ=F":"$","GC=F":"$"}
@@ -2347,38 +2908,45 @@ class StreamlitUI:
                     pv, pm2 = info_m["prix"], info_m.get("prev")
                     delta_m = (f'{self._sign((pv-pm2)/pm2*100)}{(pv-pm2)/pm2*100:.2f}%'
                                if pm2 and pm2 != 0 else None)
-                    sig     = SIGNALS.get(sym)
-                    extra   = (f"  {sig[1] if pv > sig[0] else sig[2]}" if sig else "")
+                    sig   = SIGNALS.get(sym)
+                    extra = (f"  {sig[1] if pv > sig[0] else sig[2]}" if sig else "")
                     st.metric(lbl, f"{pv:{FMT.get(sym,'.2f')}}{SFX.get(sym,'')}{extra}",
                               delta=delta_m)
                 else:
                     st.metric(lbl, "N/A")
             st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── SIMULATEUR FISCAL (v4.1 préservé) ─────────────────────────────────────
+    # ── SIMULATEUR FISCAL ─────────────────────────────────────────────────────
     def render_fiscal_simulator(self, ptf: Dict):
         st.markdown("## 🧮 Simulateur Fiscal")
+        st.caption("Calculez le montant net que vous recevrez après impôts si vous vendez.")
         col_pea, col_av = st.columns(2)
         val_env, gan_env = ptf["val_env"], ptf["gain_env"]
 
         with col_pea:
-            st.markdown('<div class="card card-blue"><h4>🏦 PEA</h4>', unsafe_allow_html=True)
+            st.markdown('<div class="card card-blue"><h4>🏦 PEA (Plan d\'Épargne en Actions)</h4>', unsafe_allow_html=True)
             net, avert = net_apres_impots("PEA", val_env["PEA"], val_env["PEA"], gan_env["PEA"])
-            if avert: st.warning(avert); st.metric("Valeur brute PEA", f"{val_env['PEA']:,.2f}€")
-            else:     st.metric("Net après PS 17.2%", f"{net:,.2f}€")
+            if avert:
+                st.warning(avert)
+                st.metric("Valeur brute PEA", f"{val_env['PEA']:,.2f}€")
+            else:
+                st.metric("Net après prélèvements (17.2%)", f"{net:,.2f}€")
             st.caption(f"Gain latent PEA : {self._sign(gan_env['PEA'])}{gan_env['PEA']:,.2f}€")
             st.markdown('</div>', unsafe_allow_html=True)
 
         with col_av:
             st.markdown('<div class="card card-blue"><h4>🛡️ Assurance-Vie</h4>', unsafe_allow_html=True)
             net, avert = net_apres_impots("AV", val_env["AV"], val_env["AV"], gan_env["AV"])
-            if avert: st.warning(avert); st.metric("Valeur brute AV", f"{val_env['AV']:,.2f}€")
-            else:     st.metric("Net après fiscalité AV", f"{net:,.2f}€")
+            if avert:
+                st.warning(avert)
+                st.metric("Valeur brute AV", f"{val_env['AV']:,.2f}€")
+            else:
+                st.metric("Net après fiscalité AV", f"{net:,.2f}€")
             st.caption(f"Gain latent AV : {self._sign(gan_env['AV'])}{gan_env['AV']:,.2f}€")
             st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown("### 💸 Simulateur de retrait partiel")
+        st.markdown("### 💸 Simulez un retrait partiel")
         sc1, sc2 = st.columns([2, 1])
         with sc2:
             env_sim = st.selectbox("Enveloppe", ["AV", "PEA"])
@@ -2396,15 +2964,15 @@ class StreamlitUI:
             imp_sim  = montant_sim - net_sim
             st.markdown(
                 f'<div class="net-box" style="display:flex;gap:2.5rem;flex-wrap:wrap;align-items:center;">'
-                f'<div><div class="kpi-label">Brut retiré</div><div class="kpi-value">{montant_sim:,.2f}€</div></div>'
+                f'<div><div class="kpi-label">Vous retirez</div><div class="kpi-value">{montant_sim:,.2f}€</div></div>'
                 f'<div style="color:#6B7585;font-size:1.5rem;">→</div>'
-                f'<div><div class="kpi-label">Part gains</div><div class="kpi-value" style="color:#D4AF37;">{gain_sim:,.2f}€</div></div>'
-                f'<div><div class="kpi-label">Impôts/PS</div><div class="kpi-value" style="color:#FF3131;">{imp_sim:,.2f}€</div></div>'
-                f'<div><div class="kpi-label">Net perçu</div><div class="kpi-value" style="color:#22C55E;">{net_sim:,.2f}€</div></div>'
+                f'<div><div class="kpi-label">Part gains imposables</div><div class="kpi-value" style="color:#D4AF37;">{gain_sim:,.2f}€</div></div>'
+                f'<div><div class="kpi-label">Impôts / PS</div><div class="kpi-value" style="color:#FF3131;">{imp_sim:,.2f}€</div></div>'
+                f'<div><div class="kpi-label">Vous recevez</div><div class="kpi-value" style="color:#22C55E;">{net_sim:,.2f}€</div></div>'
                 f'</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── FOOTER ─────────────────────────────────────────────────────────────────
+    # ── FOOTER ────────────────────────────────────────────────────────────────
     def render_footer(self, mode_direct: bool, capital: float,
                        score_h: int, score_a: int, regime_label: str,
                        live_ok: int, live_total: int):
@@ -2415,7 +2983,7 @@ class StreamlitUI:
             mode_txt = "🔌 MODE DIRECT" if mode_direct else "Ajust. patrimonial actif"
             persist  = "GitHub Gist + SQLite" if self.pm.status == "github" else "SQLite local"
             st.caption(
-                f"◈ Cockpit v5.2 Quant-System · {mode_txt} · "
+                f"◈ Cockpit v5.3 Pédagogique · {mode_txt} · "
                 f"Score H={s(score_h)}{score_h}/4 | EM={s(score_a)}{score_a}/4 · "
                 f"Régime : {regime_label} · Capital {capital:,.2f}€ · "
                 f"Persistance : {persist} · {live_ok}/{live_total} prix live · "
@@ -2427,11 +2995,11 @@ class StreamlitUI:
                 st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MODULE 12 : POINT D'ENTRÉE PRINCIPAL
+# MODULE 14 : POINT D'ENTRÉE PRINCIPAL
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
-    # ── Initialisation Session State ──────────────────────────────────────────
+    # ── Session State ─────────────────────────────────────────────────────────
     if "config_loaded" not in st.session_state:
         cfg = _load_config()
         st.session_state["cfg_capital_reel"]   = cfg["capital_reel"]
@@ -2440,26 +3008,28 @@ def main():
         st.session_state["config_loaded"]      = True
         st.session_state["save_feedback"]      = ""
 
-    # ── Instanciation des Engines ──────────────────────────────────────────────
-    with st.spinner("📡 Récupération des prix en direct..."):
+    # ── Instanciation ─────────────────────────────────────────────────────────
+    with st.spinner("📡 Chargement des données de marché..."):
         dm = DataManager()
     if not dm.live:
         st.error("❌ Aucun prix live. Vérifiez votre connexion.")
         st.stop()
 
-    # PersistenceManager (utilise le capital de la config comme base initiale)
     pm  = PersistenceManager(static_capital=st.session_state["cfg_capital_reel"])
     mre = MarketRegimeEngine(dm)
     qre = QuantRiskEngine(dm)
     pe  = PortfolioEngine(dm, mre, qre)
-    ui  = StreamlitUI(dm, pm, mre, qre, pe)
+    pde = PedagogicEngine()          # NOUVEAU v5.3
+    se  = StrategicEngine(dm, mre, qre)  # NOUVEAU v5.3
 
-    # ── Sidebar ────────────────────────────────────────────────────────────────
+    ui  = StreamlitUI(dm, pm, mre, qre, pe, pde, se)
+
+    # ── Sidebar ───────────────────────────────────────────────────────────────
     mode_direct, positions_conf, capital_reel, ajustement_pat, bonus_fortuneo = \
         ui.render_sidebar()
 
-    # ── Calculs Cœur ──────────────────────────────────────────────────────────
-    with st.spinner("⚙️ Calculs quantitatifs en cours..."):
+    # ── Calculs ───────────────────────────────────────────────────────────────
+    with st.spinner("⚙️ Calcul des indicateurs..."):
         ptf    = pe.compute_portfolio(positions_conf, capital_reel, ajustement_pat, bonus_fortuneo)
         bench  = pe.compute_benchmark(positions_conf, ptf["perf_tot_pct"])
         regime = mre.get_full_regime()
@@ -2480,47 +3050,38 @@ def main():
         ld_alerts     = pe.check_leadership_alerts()
         phase_text, phase_color = pe.determine_phase(bench.get("gap"), anrj_info, aasi_info)
 
+        # Sentinelles (utilisées par les cartes satellites)
+        _, _, sent_rows = pe.evaluate_sentinelles()
+
     live_ok    = sum(1 for v in dm.live.values() if v.get("prix"))
     live_total = len(dm.live)
 
-    # ── Expander Méthodologie ─────────────────────────────────────────────────
-    with st.expander("ℹ️ Méthodologie v5.2", expanded=False):
+    # ── Guide pédagogique ─────────────────────────────────────────────────────
+    with st.expander("📚 Guide d'utilisation du Cockpit v5.3", expanded=False):
         st.markdown("""
-### Architecture v5.2 — 6 Modules
+**Bienvenue dans votre Cockpit Décisionnel Pédagogique v5.3**
 
-| Module | Rôle |
-|--------|------|
-| **DataManager** | Données live + historique 600j, log returns |
-| **PersistenceManager** | SQLite session + GitHub Gist CSV cross-session |
-| **MarketRegimeEngine** | Score −5/+5, 5 labels, confirmation 3j anti-whipsaw |
-| **QuantRiskEngine** | Vol 30j, Beta 60j, Drawdown, Corrélation, Risk Contribution |
-| **PortfolioEngine** | Score unifié 3 couches + Score 4 composantes + Dynamic Sizing |
-| **StreamlitUI** | Rendu pur, zéro logique métier |
+Ce tableau de bord a été conçu pour vous, investisseur particulier.
+Chaque indicateur est traduit en langage simple avec une action concrète.
 
-### Dynamic Sizing Matrix
-```
-Target = Base_Weight × Régime_Multiplier × Confidence_Factor × (1 + ScoreStrat × 0.30)
-```
-| Régime | Multiplier | Conf. Vol<10% | Conf. Vol>20% |
-|--------|-----------|--------------|--------------|
-| Euphorie / Expansion | 1.00 | 1.00 | 0.60 |
-| Neutre | 0.85 | 1.00 | 0.60 |
-| Stress | 0.70 | 1.00 | 0.60 |
-| Contraction | 0.20 | 1.00 | 0.60 |
+| Section | Ce qu'elle vous dit | Ce que vous devez faire |
+|---------|---------------------|-------------------------|
+| 🌍 **Météo des marchés** | Ambiance générale de la Bourse mondiale | Adapte votre niveau de risque |
+| 🚀 **Vue d'ensemble** | Valeur totale de votre portefeuille | Suivre votre capital chaque jour |
+| 📊 **Leadership Satellite vs World** | Vaut-il la peine de garder Hydrogen / EM Asia ? | Vendre si le World fait régulièrement mieux |
+| ⚠️ **Risques** | Niveau de danger de chaque ETF | Réduire si trop agité ou trop en recul |
+| 🛰️ **Radar sectoriel** | Santé des grandes entreprises du secteur | Alerte précoce avant que votre ETF ne chute |
+| 🧮 **Simulateur fiscal** | Ce que vous recevrez après impôts | Avant tout retrait ou vente |
 
-### Score Unifié v4.1 (−4/+4) — Inchangé
-| Couche | Indicateur | Bull | Bear | Poids |
-|--------|-----------|------|------|-------|
-| Momentum | RSI 14j | 45<RSI<70 → +1 | RSI≥70 ou ≤45 → −1 | ±1 |
-| Structure | Prix vs SMA20 | Prix>SMA20 → +1 | Prix<SMA20 → −1 | ±1 |
-| Leadership | Pente RS 14j | Pente>0 → +2 | Pente<0 → −2 | ±2 |
+**Règle d'or :** N'agissez que si PLUSIEURS indicateurs pointent dans la même direction.
+Un seul indicateur rouge n'est pas suffisant pour vendre.
 """)
 
-    # ── Rendu UI ───────────────────────────────────────────────────────────────
+    # ── Rendu UI ──────────────────────────────────────────────────────────────
     ui.render_header(mode_direct, live_ok, live_total)
     ui.render_regime_banner(regime)
 
-    # Alertes Leadership
+    # Alertes leadership
     for al in ld_alerts:
         gv, nom_al, sp, wp = al["gap"], al["nom"], al["sat_perf"], al["world_perf"]
         s = StreamlitUI._sign
@@ -2528,10 +3089,11 @@ Target = Base_Weight × Régime_Multiplier × Confidence_Factor × (1 + ScoreStr
         elif gv < -2: cls, ico = "alert-leadership","⚠️"
         else: continue
         st.markdown(
-            f'<div class="{cls}">{ico} <b>ALERTE LEADERSHIP : {nom_al}</b> — '
-            f'Sous-performance de <b>{abs(gv):.1f}%</b> vs World 14j '
-            f'({nom_al} : {s(sp)}{sp:.1f}% | World : {s(wp)}{wp:.1f}%)</div>',
-            unsafe_allow_html=True)
+            f'<div class="{cls}">{ico} <b>ALERTE : {nom_al}</b> — '
+            f'{abs(gv):.1f}% en retard sur le World sur 14 jours '
+            f'({nom_al} : {s(sp)}{sp:.1f}% | World : {s(wp)}{wp:.1f}%)<br>'
+            f'<span style="font-size:.85rem;">→ Vérifiez la section Leadership ci-dessous.</span>'
+            f'</div>', unsafe_allow_html=True)
 
     # Phase banner
     st.markdown(f'<div class="phase-banner" style="background:{phase_color};color:white;">'
@@ -2541,21 +3103,40 @@ Target = Base_Weight × Régime_Multiplier × Confidence_Factor × (1 + ScoreStr
     ui.render_equity_curve_section(ptf, regime, unified_h, unified_a, positions_conf)
     ui.render_risk_dashboard(ptf)
 
-    st.markdown("## 🧠 Score Unifié — Satellites")
-    st.markdown("### 🔥 Global Hydrogen (ANRJ.PA)")
+    # ── Satellites avec pédagogie complète ────────────────────────────────────
+    st.markdown("## 🧠 Analyse des ETFs Satellites")
+
+    # Alerte décisionnelle Hydrogen
+    h_border = "#22C55E" if h_col=="green" else "#F97316" if h_col=="orange" else "#FF3131"
     st.markdown(
-        f'<div class="alert-box" style="background:#2D1515;border-left:4px solid '
-        f'{"#22C55E" if h_col=="green" else "#F97316" if h_col=="orange" else "#FF3131"};">'
-        f'{h_msg}</div>', unsafe_allow_html=True)
-    ui.render_satellite_card("Global Hydrogen", "ANRJ.PA", unified_h, target_h, regime)
+        f'<div class="card" style="border-left:4px solid {h_border};margin-bottom:.5rem;">'
+        f'<b>🔥 Hydrogen (ANRJ.PA) — Alerte décisionnelle</b><br>'
+        f'{h_msg}'
+        f'</div>', unsafe_allow_html=True)
+
+    with st.container():
+        st.markdown("### 🔥 Global Hydrogen (ANRJ.PA)")
+        ui.render_satellite_card_pedagogic(
+            "Global Hydrogen", "ANRJ.PA",
+            unified_h, target_h, regime, sent_rows, "hydrogen"
+        )
 
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown("### 🌏 EM Asia (AASI.PA)")
+
+    # Alerte décisionnelle EM Asia
+    a_border = "#22C55E" if a_col=="green" else "#F97316" if a_col=="orange" else "#FF3131"
     st.markdown(
-        f'<div class="alert-box" style="background:#2D1515;border-left:4px solid '
-        f'{"#22C55E" if a_col=="green" else "#F97316" if a_col=="orange" else "#FF3131"};">'
-        f'{a_msg}</div>', unsafe_allow_html=True)
-    ui.render_satellite_card("EM Asia", "AASI.PA", unified_a, target_a, regime)
+        f'<div class="card" style="border-left:4px solid {a_border};margin-bottom:.5rem;">'
+        f'<b>🌏 EM Asia (AASI.PA) — Alerte décisionnelle</b><br>'
+        f'{a_msg}'
+        f'</div>', unsafe_allow_html=True)
+
+    with st.container():
+        st.markdown("### 🌏 EM Asia (AASI.PA)")
+        ui.render_satellite_card_pedagogic(
+            "EM Asia", "AASI.PA",
+            unified_a, target_a, regime, sent_rows, "em_asia"
+        )
 
     ui.render_sentinelles_macro(ptf)
     ui.render_fiscal_simulator(ptf)
@@ -2565,5 +3146,5 @@ Target = Base_Weight × Régime_Multiplier × Confidence_Factor × (1 + ScoreStr
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-if __name__ == "__main__" or True:   # Streamlit exécute toujours le module
+if __name__ == "__main__" or True:
     main()
